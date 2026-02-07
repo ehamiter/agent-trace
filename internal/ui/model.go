@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +25,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -57,10 +55,6 @@ type Model struct {
 	sortOldestFirst bool
 	groupByWorktree bool
 	showKeyHelp     bool
-	helpAnim        float64
-	helpAnimVel     float64
-	helpTarget      float64
-	helpSpring      harmonica.Spring
 	rendering       bool
 	renderNonce     int
 
@@ -101,7 +95,6 @@ type renderMsg struct {
 type copyMsg struct {
 	err error
 }
-type helpAnimTickMsg struct{}
 
 type sessionItem struct {
 	s            index.Session
@@ -178,9 +171,6 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		rendered:        make(map[string]string),
 		highlighted:     make(map[string]highlight.Result),
 		matchIndex:      -1,
-		helpAnim:        0,
-		helpTarget:      0,
-		helpSpring:      harmonica.NewSpring(harmonica.FPS(60), 12.5, 0.9),
 	}
 	return m
 }
@@ -349,11 +339,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setViewportFromRendered(msg.cacheKey, msg.rendered, true)
 		}
 
-	case helpAnimTickMsg:
-		if m.stepHelpAnimation() {
-			cmds = append(cmds, helpAnimTickCmd())
-		}
-
 	case tea.KeyMsg:
 		if m.helpOverlayActive() && !key.Matches(msg, m.keys.ToggleHelp) && !key.Matches(msg, m.keys.Quit) {
 			return m, nil
@@ -362,8 +347,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.searchMode {
 			if key.Matches(msg, m.keys.ToggleHelp) {
 				m.toggleHelpOverlay()
-				cmds = append(cmds, helpAnimTickCmd())
-				return m, tea.Batch(cmds...)
+				return m, nil
 			}
 			switch msg.String() {
 			case "esc":
@@ -434,8 +418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.ToggleHelp):
 			m.toggleHelpOverlay()
-			cmds = append(cmds, helpAnimTickCmd())
-			return m, tea.Batch(cmds...)
+			return m, nil
 		case key.Matches(msg, m.keys.PageUp):
 			if !m.focusOnList {
 				m.viewport.HalfViewUp()
@@ -1084,11 +1067,9 @@ func (m Model) View() string {
 	rightPane := panelStyle(!m.focusOnList).Width(right).Height(bodyHeight).Render(rightContent)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 	if m.helpOverlayActive() {
-		anim := clamp01(m.helpAnim)
-		modal := m.shortcutsView(m.width-8, bodyHeight-4, anim)
-		yOffset := int((1 - anim) * 3)
+		modal := m.shortcutsView(m.width-8, bodyHeight-4)
 		body = backdropStyle.Render(body)
-		body = overlayModalCentered(body, modal, m.width, bodyHeight, yOffset)
+		body = overlayModalCentered(body, modal, m.width, bodyHeight)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -1169,7 +1150,7 @@ func (m Model) statusLine() string {
 	return statusStyle.Render(status)
 }
 
-func (m Model) shortcutsView(maxWidth, maxHeight int, anim float64) string {
+func (m Model) shortcutsView(maxWidth, maxHeight int) string {
 	if maxWidth < 44 {
 		maxWidth = 44
 	}
@@ -1179,8 +1160,8 @@ func (m Model) shortcutsView(maxWidth, maxHeight int, anim float64) string {
 
 	targetW := minInt(maxWidth, 84)
 	targetH := minInt(maxHeight, 22)
-	width := int(float64(targetW) * (0.82 + 0.18*anim))
-	height := int(float64(targetH) * (0.74 + 0.26*anim))
+	width := targetW
+	height := targetH
 	if width < 44 {
 		width = 44
 	}
@@ -1197,58 +1178,21 @@ func (m Model) shortcutsView(maxWidth, maxHeight int, anim float64) string {
 		MaxHeight(height - 4).
 		Render(lipgloss.JoinVertical(lipgloss.Left, header, "", body))
 
-	return shortcutsModalStyle(anim).
+	return shortcutsModalStyle().
 		Width(width).
 		Height(height).
 		Render(content)
 }
 
 func (m *Model) toggleHelpOverlay() {
-	if m.helpTarget > 0.5 {
-		m.helpTarget = 0
-		return
-	}
-	m.showKeyHelp = true
-	m.helpTarget = 1
-}
-
-func (m *Model) stepHelpAnimation() bool {
-	if !m.helpOverlayActive() && m.helpTarget == 0 {
-		return false
-	}
-
-	m.helpAnim, m.helpAnimVel = m.helpSpring.Update(m.helpAnim, m.helpAnimVel, m.helpTarget)
-	if m.helpAnim < -0.02 {
-		m.helpAnim = -0.02
-		m.helpAnimVel = 0
-	} else if m.helpAnim > 1.02 {
-		m.helpAnim = 1.02
-	}
-
-	if math.Abs(m.helpAnim-m.helpTarget) < 0.006 && math.Abs(m.helpAnimVel) < 0.006 {
-		m.helpAnim = m.helpTarget
-		m.helpAnimVel = 0
-	}
-
-	if m.helpAnim <= 0.001 && m.helpTarget == 0 {
-		m.showKeyHelp = false
-		return false
-	}
-	m.showKeyHelp = true
-	return math.Abs(m.helpAnim-m.helpTarget) >= 0.004 || math.Abs(m.helpAnimVel) >= 0.004
+	m.showKeyHelp = !m.showKeyHelp
 }
 
 func (m Model) helpOverlayActive() bool {
-	return m.showKeyHelp || m.helpAnim > 0.001 || m.helpTarget > 0.001
+	return m.showKeyHelp
 }
 
-func helpAnimTickCmd() tea.Cmd {
-	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
-		return helpAnimTickMsg{}
-	})
-}
-
-func overlayModalCentered(base, modal string, width, height, yOffset int) string {
+func overlayModalCentered(base, modal string, width, height int) string {
 	baseLines := normalizeCanvasLines(base, width, height)
 	if len(baseLines) == 0 {
 		baseLines = make([]string, height)
@@ -1257,11 +1201,7 @@ func overlayModalCentered(base, modal string, width, height, yOffset int) string
 		}
 	}
 
-	modalLayer := modal
-	if yOffset > 0 {
-		modalLayer = lipgloss.NewStyle().MarginTop(yOffset).Render(modalLayer)
-	}
-	layer := lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modalLayer)
+	layer := lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 	layerLines := normalizeCanvasLines(layer, width, height)
 
 	out := make([]string, height)
@@ -1305,16 +1245,6 @@ func padToWidth(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-w)
-}
-
-func clamp01(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
 }
 
 func minInt(a, b int) int {
@@ -1455,16 +1385,10 @@ var (
 				Background(lipgloss.Color("220"))
 )
 
-func shortcutsModalStyle(anim float64) lipgloss.Style {
-	borderColor := lipgloss.Color("99")
-	if anim > 0.66 {
-		borderColor = lipgloss.Color("212")
-	} else if anim > 0.33 {
-		borderColor = lipgloss.Color("141")
-	}
+func shortcutsModalStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
+		BorderForeground(lipgloss.Color("141")).
 		Background(lipgloss.Color("235")).
 		Foreground(lipgloss.Color("252")).
 		Padding(1, 1)

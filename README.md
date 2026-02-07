@@ -53,7 +53,7 @@ Flags:
 - `a`: collapse/expand initial AGENTS.md instructions block in transcript view
 - `/`: enter search mode
 - `esc`: clear search mode and query
-- `?`: toggle animated centered keyboard-shortcuts modal
+- `?`: toggle centered keyboard-shortcuts modal
 - `x`: export selected session
 - `c`: export + copy PR snippet to clipboard
 - `t`: toggle include tool events
