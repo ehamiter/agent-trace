@@ -51,6 +51,7 @@ Flags:
 - `a`: collapse/expand initial AGENTS.md instructions block in transcript view
 - `/`: enter search mode
 - `esc`: clear search mode and query
+- `?`: toggle animated centered keyboard-shortcuts modal
 - `e`: export selected session
 - `c`: export + copy PR snippet to clipboard
 - `t`: toggle include tool events
@@ -64,5 +65,6 @@ Flags:
 - Malformed JSONL lines are skipped safely.
 - Transcript rendering is cached by session + toggles + width to avoid rerender flicker.
 - Highlighting is applied after Glamour rendering to preserve markdown styling.
+- The bottom row is reserved for status/search info; shortcuts are shown via `?` as a centered modal.
 - If you see no sessions after upgrading, run once with `--reindex` to rebuild offsets/state.
 - Very large embedded image payloads are condensed in the TUI display to keep navigation responsive (exports still use full indexed content).

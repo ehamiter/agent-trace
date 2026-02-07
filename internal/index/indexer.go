@@ -720,15 +720,15 @@ func (i *Indexer) searchRowsFTS(query string, limit int) (*sql.Rows, error) {
 		SELECT s.id, s.source, COALESCE(s.last_activity_ts, 0), COALESCE(s.message_count, 0), COALESCE(s.workdir, ''), COALESCE(s.preview, '')
 		FROM sessions s
 		JOIN (
-			SELECT session_id, MIN(bm25(messages_fts)) AS score
+			SELECT session_id, COUNT(*) AS score
 			FROM messages_fts
 			WHERE messages_fts MATCH ?
 			GROUP BY session_id
-			ORDER BY score
+			ORDER BY score DESC
 			LIMIT ?
 		) ranked ON ranked.session_id = s.id
 		WHERE COALESCE(s.message_count, 0) > 0
-		ORDER BY ranked.score, s.last_activity_ts DESC
+		ORDER BY ranked.score DESC, s.last_activity_ts DESC
 	`, ftsQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("fts query failed: %w", err)

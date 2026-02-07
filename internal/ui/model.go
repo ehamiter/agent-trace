@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,7 +25,9 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type Model struct {
@@ -50,6 +53,11 @@ type Model struct {
 	includeAborted bool
 	includeEvents  bool
 	collapseAgents bool
+	showKeyHelp    bool
+	helpAnim       float64
+	helpAnimVel    float64
+	helpTarget     float64
+	helpSpring     harmonica.Spring
 	rendering      bool
 	renderNonce    int
 
@@ -90,6 +98,7 @@ type renderMsg struct {
 type copyMsg struct {
 	err error
 }
+type helpAnimTickMsg struct{}
 
 type sessionItem struct {
 	s index.Session
@@ -159,6 +168,9 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		rendered:       make(map[string]string),
 		highlighted:    make(map[string]highlight.Result),
 		matchIndex:     -1,
+		helpAnim:       0,
+		helpTarget:     0,
+		helpSpring:     harmonica.NewSpring(harmonica.FPS(60), 12.5, 0.9),
 	}
 	return m
 }
@@ -327,8 +339,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setViewportFromRendered(msg.cacheKey, msg.rendered, true)
 		}
 
+	case helpAnimTickMsg:
+		if m.stepHelpAnimation() {
+			cmds = append(cmds, helpAnimTickCmd())
+		}
+
 	case tea.KeyMsg:
+		if m.helpOverlayActive() && !key.Matches(msg, m.keys.ToggleHelp) && !key.Matches(msg, m.keys.Quit) {
+			return m, nil
+		}
+
 		if m.searchMode {
+			if key.Matches(msg, m.keys.ToggleHelp) {
+				m.toggleHelpOverlay()
+				cmds = append(cmds, helpAnimTickCmd())
+				return m, tea.Batch(cmds...)
+			}
 			switch msg.String() {
 			case "esc":
 				m.searchMode = false
@@ -377,6 +403,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.FocusRight):
 			m.focusOnList = false
 			return m, nil
+		case key.Matches(msg, m.keys.ToggleHelp):
+			m.toggleHelpOverlay()
+			cmds = append(cmds, helpAnimTickCmd())
+			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.PageUp):
 			if !m.focusOnList {
 				m.viewport.HalfViewUp()
@@ -842,7 +872,7 @@ func (m *Model) resize() {
 	}
 	left, right := m.paneWidths()
 
-	bodyHeight := m.height - 2
+	bodyHeight := m.height - 1
 	if bodyHeight < 8 {
 		bodyHeight = 8
 	}
@@ -857,23 +887,27 @@ func (m Model) View() string {
 		return "Starting..."
 	}
 
-	status := m.statusLine()
-	left, right := m.paneWidths()
-	leftPane := panelStyle(m.focusOnList).Width(left).Height(m.height - 2).Render(m.list.View())
-	rightPane := panelStyle(!m.focusOnList).Width(right).Height(m.height - 2).Render(m.viewport.View())
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	bodyHeight := m.height - 1
+	if bodyHeight < 8 {
+		bodyHeight = 8
+	}
 
-	helpView := m.help.View(m.keys)
-	if m.searchMode {
-		helpView = m.search.View() + "  " + helpView
-	} else if m.searchQuery != "" {
-		helpView = "search: " + m.searchQuery + "  " + helpView
+	left, right := m.paneWidths()
+	leftPane := panelStyle(m.focusOnList).Width(left).Height(bodyHeight).Render(m.list.View())
+	rightContent := m.viewport.View()
+	rightPane := panelStyle(!m.focusOnList).Width(right).Height(bodyHeight).Render(rightContent)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	if m.helpOverlayActive() {
+		anim := clamp01(m.helpAnim)
+		modal := m.shortcutsView(m.width-8, bodyHeight-4, anim)
+		yOffset := int((1 - anim) * 3)
+		body = backdropStyle.Render(body)
+		body = overlayModalCentered(body, modal, m.width, bodyHeight, yOffset)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		status,
 		body,
-		helpView,
+		m.statusLine(),
 	)
 }
 
@@ -894,6 +928,13 @@ func (m Model) statusLine() string {
 	}
 	if m.searchQuery != "" || m.searchMode {
 		status += "  [search]"
+		queryText := strings.TrimSpace(m.searchQuery)
+		if m.searchMode {
+			queryText = strings.TrimSpace(m.search.Value())
+		}
+		if queryText != "" {
+			status += "  q=" + shorten(queryText, 40)
+		}
 		if strings.TrimSpace(m.searchQuery) != "" {
 			if m.matchCount > 0 {
 				cur := m.matchIndex + 1
@@ -921,6 +962,12 @@ func (m Model) statusLine() string {
 	if m.rendering {
 		status += "  [rendering]"
 	}
+	if m.helpOverlayActive() {
+		status += "  [? shortcuts]"
+	}
+	if m.searchMode {
+		status += "  " + m.search.View()
+	}
 	if strings.TrimSpace(m.status) != "" {
 		status += "  " + shorten(strings.TrimSpace(m.status), 80)
 	}
@@ -928,6 +975,168 @@ func (m Model) statusLine() string {
 		status += "  err=" + m.err.Error()
 	}
 	return statusStyle.Render(status)
+}
+
+func (m Model) shortcutsView(maxWidth, maxHeight int, anim float64) string {
+	if maxWidth < 44 {
+		maxWidth = 44
+	}
+	if maxHeight < 10 {
+		maxHeight = 10
+	}
+
+	targetW := minInt(maxWidth, 84)
+	targetH := minInt(maxHeight, 22)
+	width := int(float64(targetW) * (0.82 + 0.18*anim))
+	height := int(float64(targetH) * (0.74 + 0.26*anim))
+	if width < 44 {
+		width = 44
+	}
+	if height < 10 {
+		height = 10
+	}
+
+	helpModel := m.help
+	helpModel.ShowAll = true
+	body := helpModel.View(m.keys)
+	header := shortcutsTitleStyle.Render("Keyboard Shortcuts  (? to close)")
+	content := lipgloss.NewStyle().
+		Width(width - 4).
+		MaxHeight(height - 4).
+		Render(lipgloss.JoinVertical(lipgloss.Left, header, "", body))
+
+	return shortcutsModalStyle(anim).
+		Width(width).
+		Height(height).
+		Render(content)
+}
+
+func (m *Model) toggleHelpOverlay() {
+	if m.helpTarget > 0.5 {
+		m.helpTarget = 0
+		return
+	}
+	m.showKeyHelp = true
+	m.helpTarget = 1
+}
+
+func (m *Model) stepHelpAnimation() bool {
+	if !m.helpOverlayActive() && m.helpTarget == 0 {
+		return false
+	}
+
+	m.helpAnim, m.helpAnimVel = m.helpSpring.Update(m.helpAnim, m.helpAnimVel, m.helpTarget)
+	if m.helpAnim < -0.02 {
+		m.helpAnim = -0.02
+		m.helpAnimVel = 0
+	} else if m.helpAnim > 1.02 {
+		m.helpAnim = 1.02
+	}
+
+	if math.Abs(m.helpAnim-m.helpTarget) < 0.006 && math.Abs(m.helpAnimVel) < 0.006 {
+		m.helpAnim = m.helpTarget
+		m.helpAnimVel = 0
+	}
+
+	if m.helpAnim <= 0.001 && m.helpTarget == 0 {
+		m.showKeyHelp = false
+		return false
+	}
+	m.showKeyHelp = true
+	return math.Abs(m.helpAnim-m.helpTarget) >= 0.004 || math.Abs(m.helpAnimVel) >= 0.004
+}
+
+func (m Model) helpOverlayActive() bool {
+	return m.showKeyHelp || m.helpAnim > 0.001 || m.helpTarget > 0.001
+}
+
+func helpAnimTickCmd() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return helpAnimTickMsg{}
+	})
+}
+
+func overlayModalCentered(base, modal string, width, height, yOffset int) string {
+	baseLines := normalizeCanvasLines(base, width, height)
+	if len(baseLines) == 0 {
+		baseLines = make([]string, height)
+		for i := range baseLines {
+			baseLines[i] = strings.Repeat(" ", maxInt(width, 0))
+		}
+	}
+
+	modalLayer := modal
+	if yOffset > 0 {
+		modalLayer = lipgloss.NewStyle().MarginTop(yOffset).Render(modalLayer)
+	}
+	layer := lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modalLayer)
+	layerLines := normalizeCanvasLines(layer, width, height)
+
+	out := make([]string, height)
+	for i := 0; i < height; i++ {
+		if strings.TrimSpace(ansi.Strip(layerLines[i])) == "" {
+			out[i] = baseLines[i]
+			continue
+		}
+		out[i] = layerLines[i]
+	}
+	return strings.Join(out, "\n")
+}
+
+func normalizeCanvasLines(s string, width, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) < height {
+		pad := make([]string, height-len(lines))
+		lines = append(lines, pad...)
+	} else if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i := range lines {
+		lines[i] = padToWidth(lines[i], width)
+	}
+	return lines
+}
+
+func padToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = ansi.Truncate(s, width, "")
+	w := ansi.StringWidth(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (m *Model) paneWidths() (int, int) {
@@ -1017,11 +1226,31 @@ var (
 			Foreground(lipgloss.Color("252")).
 			Background(lipgloss.Color("24")).
 			Padding(0, 1)
+	backdropStyle = lipgloss.NewStyle().
+			Faint(true)
+	shortcutsTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("212")).
+				Bold(true)
 	searchMatchStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("16")).
 				Background(lipgloss.Color("220"))
 )
+
+func shortcutsModalStyle(anim float64) lipgloss.Style {
+	borderColor := lipgloss.Color("99")
+	if anim > 0.66 {
+		borderColor = lipgloss.Color("212")
+	} else if anim > 0.33 {
+		borderColor = lipgloss.Color("141")
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Background(lipgloss.Color("235")).
+		Foreground(lipgloss.Color("252")).
+		Padding(1, 1)
+}
 
 func panelStyle(active bool) lipgloss.Style {
 	border := lipgloss.NormalBorder()
@@ -1049,6 +1278,7 @@ type keyMap struct {
 	NextPage      key.Binding
 	Search        key.Binding
 	Esc           key.Binding
+	ToggleHelp    key.Binding
 	Export        key.Binding
 	Copy          key.Binding
 	ToggleTools   key.Binding
@@ -1104,6 +1334,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("esc"),
 			key.WithHelp("esc", "clear search"),
 		),
+		ToggleHelp: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "toggle shortcuts"),
+		),
 		Export: key.NewBinding(
 			key.WithKeys("e"),
 			key.WithHelp("e", "export markdown"),
@@ -1136,13 +1370,13 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.NextPage, k.PrevPage, k.Search, k.Copy, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.Search, k.ToggleHelp, k.Copy, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab},
-		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc},
+		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc, k.ToggleHelp},
 		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
 	}
 }
