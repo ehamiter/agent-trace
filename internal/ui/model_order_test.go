@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"codex-trace/internal/index"
@@ -179,4 +182,59 @@ func ids(in []index.Session) []string {
 		out = append(out, s.ID)
 	}
 	return out
+}
+
+func TestCollapseInitialAgentsBlock(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	in := "## You\n# AGENTS.md instructions for " + dir + "\n<INSTRUCTIONS>\nhello\n</INSTRUCTIONS>\n## Codex\nok\n"
+	out := collapseInitialAgentsBlock(in)
+	if !strings.Contains(out, "AGENTS.md instructions collapsed") {
+		t.Fatalf("expected collapsed marker, got: %q", out)
+	}
+	if strings.Contains(out, "<INSTRUCTIONS>") {
+		t.Fatalf("expected instructions body to be removed")
+	}
+}
+
+func TestCollapseInitialAgentsBlock_NoStructuredBlock(t *testing.T) {
+	in := "## You\nI mentioned # AGENTS.md instructions for /tmp/repo in text\n## Codex\nok\n"
+	out := collapseInitialAgentsBlock(in)
+	if out != in {
+		t.Fatalf("expected unchanged markdown when no structured AGENTS block")
+	}
+}
+
+func TestCollapseInitialAgentsBlock_SkipsWhenAgentsFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	in := "## You\n# AGENTS.md instructions for " + dir + "\n<INSTRUCTIONS>\nhello\n</INSTRUCTIONS>\n## Codex\nok\n"
+	out := collapseInitialAgentsBlock(in)
+	if out != in {
+		t.Fatalf("expected unchanged markdown when AGENTS.md file does not exist")
+	}
+}
+
+func TestPrependCollapsedEventsHint(t *testing.T) {
+	msgs := []index.Message{
+		{Role: "assistant", Type: "message", Content: "hello"},
+		{Role: "system", Type: "event_msg", Content: "internal event"},
+	}
+	md := "## Codex\n\nhello\n"
+	out := prependCollapsedEventsHint(md, msgs, index.TranscriptToggles{})
+	if !strings.Contains(out, "Events hidden (1)") {
+		t.Fatalf("expected events hint, got: %q", out)
+	}
+}
+
+func TestPrependCollapsedEventsHint_NotShownWhenEnabled(t *testing.T) {
+	msgs := []index.Message{
+		{Role: "system", Type: "event_msg", Content: "internal event"},
+	}
+	md := "## Event\n\nx\n"
+	out := prependCollapsedEventsHint(md, msgs, index.TranscriptToggles{IncludeEvents: true})
+	if out != md {
+		t.Fatalf("expected unchanged markdown when events toggle enabled")
+	}
 }

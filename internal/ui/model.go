@@ -704,6 +704,7 @@ func (m Model) renderTranscriptCmd(
 	return func() tea.Msg {
 		filtered := index.FilterMessages(msgs, toggles)
 		md := export.BuildTranscriptMarkdown(msgs, toggles)
+		md = prependCollapsedEventsHint(md, msgs, toggles)
 		if strings.TrimSpace(md) == "" {
 			if hasOnlyBoilerplateConversation(msgs) {
 				md = "_Session contains only environment/turn boilerplate and no conversational turns._"
@@ -874,6 +875,41 @@ func hasOnlyBoilerplateConversation(msgs []index.Message) bool {
 	return hasCanonical
 }
 
+func prependCollapsedEventsHint(md string, msgs []index.Message, toggles index.TranscriptToggles) string {
+	if toggles.IncludeEvents {
+		return md
+	}
+	hidden := hiddenNonMessageEventCount(msgs, toggles)
+	if hidden == 0 {
+		return md
+	}
+	hint := fmt.Sprintf("> [Events hidden (%d). Press `e` to expand event messages.]\n\n", hidden)
+	return hint + md
+}
+
+func hiddenNonMessageEventCount(msgs []index.Message, toggles index.TranscriptToggles) int {
+	count := 0
+	for _, msg := range msgs {
+		if strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		typ := strings.ToLower(strings.TrimSpace(msg.Type))
+
+		if typ == "message" && (role == "user" || role == "assistant") {
+			continue
+		}
+		if typ == "user_message" {
+			continue
+		}
+		if strings.Contains(role, "tool") || strings.Contains(typ, "tool") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func isLikelyEnvironmentBoilerplate(content string) bool {
 	c := strings.ToLower(strings.TrimSpace(content))
 	if c == "" {
@@ -910,21 +946,44 @@ func collapseInitialAgentsBlock(md string) string {
 		return md
 	}
 
-	end := -1
-	if closeIdx := strings.Index(md[start:], "</INSTRUCTIONS>"); closeIdx >= 0 {
-		end = start + closeIdx + len("</INSTRUCTIONS>")
+	// Only collapse if this looks like a real AGENTS block with explicit
+	// instructions tags, otherwise leave transcript untouched.
+	if start > 0 && md[start-1] != '\n' {
+		return md
 	}
-	if end < 0 {
-		if nextSectionIdx := strings.Index(md[start:], "\n## "); nextSectionIdx >= 0 {
-			end = start + nextSectionIdx
-		}
+	openRel := strings.Index(md[start:], "<INSTRUCTIONS>")
+	if openRel < 0 {
+		return md
 	}
-	if end < 0 {
-		end = len(md)
+	openIdx := start + openRel
+	closeRel := strings.Index(md[openIdx:], "</INSTRUCTIONS>")
+	if closeRel < 0 {
+		return md
 	}
+
+	// Only collapse when the referenced repo actually has an AGENTS.md file.
+	if !agentsFileExistsFromMarkerLine(md, start, marker) {
+		return md
+	}
+	end := openIdx + closeRel + len("</INSTRUCTIONS>")
 
 	replacement := "\n> [AGENTS.md instructions collapsed. Press `a` to expand.]\n"
 	return md[:start] + replacement + md[end:]
+}
+
+func agentsFileExistsFromMarkerLine(md string, start int, marker string) bool {
+	lineEnd := strings.Index(md[start:], "\n")
+	if lineEnd < 0 {
+		lineEnd = len(md) - start
+	}
+	line := strings.TrimSpace(md[start : start+lineEnd])
+	path := strings.TrimSpace(strings.TrimPrefix(line, marker))
+	path = strings.Trim(path, "`'\"")
+	if path == "" {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(path, "AGENTS.md"))
+	return err == nil && !st.IsDir()
 }
 
 func stripEmbeddedImageData(s string) string {
@@ -1508,8 +1567,8 @@ func defaultKeys() keyMap {
 			key.WithHelp("?", "toggle shortcuts"),
 		),
 		Export: key.NewBinding(
-			key.WithKeys("e"),
-			key.WithHelp("e", "export markdown"),
+			key.WithKeys("x"),
+			key.WithHelp("x", "export markdown"),
 		),
 		Copy: key.NewBinding(
 			key.WithKeys("c"),
@@ -1528,8 +1587,8 @@ func defaultKeys() keyMap {
 			key.WithHelp("a", "agents expand/collapse"),
 		),
 		ToggleEvents: key.NewBinding(
-			key.WithKeys("v"),
-			key.WithHelp("v", "toggle events"),
+			key.WithKeys("e"),
+			key.WithHelp("e", "toggle events"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),

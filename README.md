@@ -54,11 +54,11 @@ Flags:
 - `/`: enter search mode
 - `esc`: clear search mode and query
 - `?`: toggle animated centered keyboard-shortcuts modal
-- `e`: export selected session
+- `x`: export selected session
 - `c`: export + copy PR snippet to clipboard
 - `t`: toggle include tool events
 - `u`: toggle include aborted user inputs (`user_message` fallback)
-- `v`: toggle include non-message events
+- `e`: toggle include non-message events
 - `q`: quit
 
 ## Notes

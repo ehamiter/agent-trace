@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,6 +45,14 @@ func BuildTranscriptMarkdown(messages []index.Message, toggles index.TranscriptT
 	filtered := index.FilterMessages(messages, toggles)
 	var b strings.Builder
 	for _, m := range filtered {
+		content := strings.TrimSpace(m.Content)
+		if m.Role == "user" {
+			content = sanitizeUserTranscriptContent(content)
+		}
+		if content == "" {
+			continue
+		}
+
 		switch m.Role {
 		case "user":
 			header := "## You"
@@ -51,27 +60,113 @@ func BuildTranscriptMarkdown(messages []index.Message, toggles index.TranscriptT
 				header += " (aborted)"
 			}
 			b.WriteString(header + "\n\n")
-			b.WriteString(strings.TrimSpace(m.Content) + "\n\n")
+			b.WriteString(content + "\n\n")
 		case "assistant":
 			b.WriteString("## Codex\n\n")
-			b.WriteString(strings.TrimSpace(m.Content) + "\n\n")
+			b.WriteString(content + "\n\n")
 		default:
-			if strings.TrimSpace(m.Content) != "" {
-				title := "## Event"
-				if indexFilterIsTool(m) {
-					title = "## Tool"
-				}
-				if m.Type != "" {
-					title += " (" + m.Type + ")"
-				}
-				b.WriteString(title + "\n\n")
-				b.WriteString("```text\n")
-				b.WriteString(strings.TrimSpace(m.Content) + "\n")
-				b.WriteString("```\n\n")
+			title := "## Event"
+			if indexFilterIsTool(m) {
+				title = "## Tool"
 			}
+			if m.Type != "" {
+				title += " (" + m.Type + ")"
+			}
+			b.WriteString(title + "\n\n")
+			b.WriteString("```text\n")
+			b.WriteString(content + "\n")
+			b.WriteString("```\n\n")
 		}
 	}
 	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func sanitizeUserTranscriptContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	if strings.Contains(lower, "<instructions>") {
+		// Keep structured AGENTS blocks only when the referenced AGENTS.md file
+		// exists; otherwise strip stale preamble blocks that render as a dangling
+		// heading in Glamour.
+		content = stripStaleStructuredAgentsBlock(content)
+		if strings.TrimSpace(content) == "" {
+			return ""
+		}
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isAgentsHeadingLine(line) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+var agentsHeadingLineRe = regexp.MustCompile(`(?i)^[\s#>*` + "`" + `-]*agents\.md instructions for\b`)
+var instructionsBlockRe = regexp.MustCompile(`(?is)<instructions>.*?</instructions>`)
+
+func isAgentsHeadingLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	return agentsHeadingLineRe.MatchString(trimmed)
+}
+
+func stripStaleStructuredAgentsBlock(content string) string {
+	path, ok := agentsPathFromContent(content)
+	if !ok {
+		return content
+	}
+	if agentsFileExists(path) {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isAgentsHeadingLine(line) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	joined := strings.Join(filtered, "\n")
+	joined = instructionsBlockRe.ReplaceAllString(joined, "")
+	return strings.TrimSpace(joined)
+}
+
+func agentsPathFromContent(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !isAgentsHeadingLine(trimmed) {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		idx := strings.Index(lower, "agents.md instructions for")
+		if idx < 0 {
+			continue
+		}
+		path := strings.TrimSpace(trimmed[idx+len("agents.md instructions for"):])
+		path = strings.Trim(path, "`'\"")
+		if path == "" {
+			return "", false
+		}
+		return path, true
+	}
+	return "", false
+}
+
+func agentsFileExists(path string) bool {
+	st, err := os.Stat(filepath.Join(path, "AGENTS.md"))
+	return err == nil && !st.IsDir()
 }
 
 func BuildSessionMarkdown(session index.Session, transcript string, now time.Time) string {
