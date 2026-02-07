@@ -2,6 +2,12 @@
 
 `codex-trace` is a terminal UI for browsing local Codex session history and exporting transcripts to Markdown.
 
+<p align="center">
+  <a href="codex-trace.png">
+    <img src="codex-trace.png" alt="codex-trace terminal UI screenshot" width="1100" />
+  </a>
+</p>
+
 ## Features
 
 - Left pane sessions list, right pane transcript viewer.
