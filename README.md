@@ -42,7 +42,10 @@ Flags:
 ## Keybindings
 
 - `up/down` or `j/k`: move in session list (when list is focused)
+- `left` / `right`: focus list / focus transcript
 - `tab`: toggle focus between list and transcript
+- `n`: page down in transcript
+- `p`: page up in transcript
 - `/`: enter search mode
 - `esc`: clear search mode and query
 - `e`: export selected session

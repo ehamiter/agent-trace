@@ -307,6 +307,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Tab):
 			m.focusOnList = !m.focusOnList
 			return m, nil
+		case key.Matches(msg, m.keys.FocusLeft):
+			m.focusOnList = true
+			return m, nil
+		case key.Matches(msg, m.keys.FocusRight):
+			m.focusOnList = false
+			return m, nil
+		case key.Matches(msg, m.keys.PageUp), key.Matches(msg, m.keys.PrevPage):
+			if !m.focusOnList {
+				m.viewport.HalfViewUp()
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.PageDown), key.Matches(msg, m.keys.NextPage):
+			if !m.focusOnList {
+				m.viewport.HalfViewDown()
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ToggleTools):
 			m.includeTools = !m.includeTools
 			return m, m.renderSelected(true)
@@ -339,10 +355,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.LineUp(1)
 			case "down", "j":
 				m.viewport.LineDown(1)
-			case "pgup", "b":
-				m.viewport.HalfViewUp()
-			case "pgdown", "f", "space":
-				m.viewport.HalfViewDown()
 			}
 		}
 	}
@@ -691,7 +703,13 @@ func panelStyle(active bool) lipgloss.Style {
 type keyMap struct {
 	Up            key.Binding
 	Down          key.Binding
+	FocusLeft     key.Binding
+	FocusRight    key.Binding
 	Tab           key.Binding
+	PageUp        key.Binding
+	PageDown      key.Binding
+	PrevPage      key.Binding
+	NextPage      key.Binding
 	Search        key.Binding
 	Esc           key.Binding
 	Export        key.Binding
@@ -711,9 +729,33 @@ func defaultKeys() keyMap {
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "down"),
 		),
+		FocusLeft: key.NewBinding(
+			key.WithKeys("left"),
+			key.WithHelp("←", "focus list"),
+		),
+		FocusRight: key.NewBinding(
+			key.WithKeys("right"),
+			key.WithHelp("→", "focus transcript"),
+		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "toggle focus"),
+		),
+		PageUp: key.NewBinding(
+			key.WithKeys("pgup", "b"),
+			key.WithHelp("pgup", "page up"),
+		),
+		PageDown: key.NewBinding(
+			key.WithKeys("pgdown", "f"),
+			key.WithHelp("pgdn", "page down"),
+		),
+		PrevPage: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "prev page"),
+		),
+		NextPage: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "next page"),
 		),
 		Search: key.NewBinding(
 			key.WithKeys("/"),
@@ -747,12 +789,13 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Tab, k.Search, k.Export, k.ToggleTools, k.ToggleAborted, k.ToggleEvents, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Tab, k.Search, k.Esc},
+		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab},
+		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc},
 		{k.Export, k.ToggleTools, k.ToggleAborted, k.ToggleEvents, k.Quit},
 	}
 }
