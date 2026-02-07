@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,21 +46,23 @@ type Model struct {
 	width  int
 	height int
 
-	indexing       bool
-	searchMode     bool
-	searchQuery    string
-	focusOnList    bool
-	includeTools   bool
-	includeAborted bool
-	includeEvents  bool
-	collapseAgents bool
-	showKeyHelp    bool
-	helpAnim       float64
-	helpAnimVel    float64
-	helpTarget     float64
-	helpSpring     harmonica.Spring
-	rendering      bool
-	renderNonce    int
+	indexing        bool
+	searchMode      bool
+	searchQuery     string
+	focusOnList     bool
+	includeTools    bool
+	includeAborted  bool
+	includeEvents   bool
+	collapseAgents  bool
+	sortOldestFirst bool
+	groupByWorktree bool
+	showKeyHelp     bool
+	helpAnim        float64
+	helpAnimVel     float64
+	helpTarget      float64
+	helpSpring      harmonica.Spring
+	rendering       bool
+	renderNonce     int
 
 	selectedID  string
 	sessions    map[string]index.Session
@@ -101,17 +104,22 @@ type copyMsg struct {
 type helpAnimTickMsg struct{}
 
 type sessionItem struct {
-	s index.Session
+	s            index.Session
+	groupDivider bool
 }
 
 func (i sessionItem) Title() string {
+	prefix := ""
+	if i.groupDivider {
+		prefix = "┈ "
+	}
 	if i.s.Workdir != "" {
 		base := filepath.Base(i.s.Workdir)
 		if base != "." && base != "/" {
-			return base
+			return prefix + base
 		}
 	}
-	return shorten(i.s.ID, 28)
+	return prefix + shorten(i.s.ID, 28)
 }
 
 func (i sessionItem) Description() string {
@@ -160,17 +168,19 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		search:   ti,
 		keys:     defaultKeys(),
 
-		indexing:       true,
-		focusOnList:    true,
-		collapseAgents: true,
-		sessions:       make(map[string]index.Session),
-		messages:       make(map[string][]index.Message),
-		rendered:       make(map[string]string),
-		highlighted:    make(map[string]highlight.Result),
-		matchIndex:     -1,
-		helpAnim:       0,
-		helpTarget:     0,
-		helpSpring:     harmonica.NewSpring(harmonica.FPS(60), 12.5, 0.9),
+		indexing:        true,
+		focusOnList:     true,
+		collapseAgents:  true,
+		sortOldestFirst: false,
+		groupByWorktree: false,
+		sessions:        make(map[string]index.Session),
+		messages:        make(map[string][]index.Message),
+		rendered:        make(map[string]string),
+		highlighted:     make(map[string]highlight.Result),
+		matchIndex:      -1,
+		helpAnim:        0,
+		helpTarget:      0,
+		helpSpring:      harmonica.NewSpring(harmonica.FPS(60), 12.5, 0.9),
 	}
 	return m
 }
@@ -403,6 +413,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.FocusRight):
 			m.focusOnList = false
 			return m, nil
+		case key.Matches(msg, m.keys.ToggleSort):
+			m.sortOldestFirst = !m.sortOldestFirst
+			if strings.TrimSpace(m.searchQuery) != "" || m.searchMode {
+				m.status = "Sort set to " + m.sortLabel() + " (applies when search is cleared)"
+			} else {
+				m.selectedID = ""
+				m.applySessionsFromMap()
+				m.status = "Sort: " + m.sortLabel()
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.ToggleGrouping):
+			m.groupByWorktree = !m.groupByWorktree
+			if strings.TrimSpace(m.searchQuery) != "" || m.searchMode {
+				m.status = "Grouping set to " + m.groupingLabel() + " (applies when search is cleared)"
+			} else {
+				m.applySessionsFromMap()
+				m.status = "Grouping: " + m.groupingLabel()
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.ToggleHelp):
 			m.toggleHelpOverlay()
 			cmds = append(cmds, helpAnimTickCmd())
@@ -489,15 +518,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applySessions(in []index.Session) {
+	ordered := m.orderedSessions(in)
+
 	items := make([]list.Item, 0, len(in))
 	m.sessions = make(map[string]index.Session, len(in))
-	for _, s := range in {
+	prevGroup := ""
+	groupedMode := m.groupByWorktree && strings.TrimSpace(m.searchQuery) == "" && !m.searchMode
+	for idx, s := range ordered {
 		m.sessions[s.ID] = s
-		items = append(items, sessionItem{s: s})
+		groupDivider := false
+		if groupedMode {
+			curGroup := sessionGroupKey(s)
+			groupDivider = idx > 0 && curGroup != prevGroup
+			prevGroup = curGroup
+		}
+		items = append(items, sessionItem{s: s, groupDivider: groupDivider})
 	}
 	m.list.SetItems(items)
 
-	if len(in) == 0 {
+	if len(ordered) == 0 {
 		m.selectedID = ""
 		if strings.TrimSpace(m.searchQuery) == "" {
 			m.viewport.SetContent("No sessions found.\n\nTip: run with --reindex to force rebuilding from rollout logs.")
@@ -509,7 +548,7 @@ func (m *Model) applySessions(in []index.Session) {
 
 	selectIdx := 0
 	if m.selectedID != "" {
-		for idx, s := range in {
+		for idx, s := range ordered {
 			if s.ID == m.selectedID {
 				selectIdx = idx
 				break
@@ -517,7 +556,95 @@ func (m *Model) applySessions(in []index.Session) {
 		}
 	}
 	m.list.Select(selectIdx)
-	m.selectedID = in[selectIdx].ID
+	m.selectedID = ordered[selectIdx].ID
+}
+
+func (m *Model) applySessionsFromMap() {
+	if len(m.sessions) == 0 {
+		return
+	}
+	all := make([]index.Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		all = append(all, s)
+	}
+	m.applySessions(all)
+}
+
+func (m Model) orderedSessions(in []index.Session) []index.Session {
+	out := make([]index.Session, len(in))
+	copy(out, in)
+
+	// Preserve backend relevance ranking while search mode/query is active.
+	if strings.TrimSpace(m.searchQuery) != "" || m.searchMode {
+		return out
+	}
+
+	if m.groupByWorktree {
+		groupScore := make(map[string]int64, len(out))
+		for _, s := range out {
+			g := sessionGroupKey(s)
+			ts := s.LastActivityTS
+			cur, ok := groupScore[g]
+			if !ok {
+				groupScore[g] = ts
+				continue
+			}
+			if m.sortOldestFirst {
+				if ts < cur {
+					groupScore[g] = ts
+				}
+			} else {
+				if ts > cur {
+					groupScore[g] = ts
+				}
+			}
+		}
+
+		sort.SliceStable(out, func(i, j int) bool {
+			gi := sessionGroupKey(out[i])
+			gj := sessionGroupKey(out[j])
+			if gi != gj {
+				if gi == "~" && gj != "~" {
+					return false
+				}
+				if gj == "~" && gi != "~" {
+					return true
+				}
+				if groupScore[gi] != groupScore[gj] {
+					if m.sortOldestFirst {
+						return groupScore[gi] < groupScore[gj]
+					}
+					return groupScore[gi] > groupScore[gj]
+				}
+				return gi < gj
+			}
+			if out[i].LastActivityTS != out[j].LastActivityTS {
+				if m.sortOldestFirst {
+					return out[i].LastActivityTS < out[j].LastActivityTS
+				}
+				return out[i].LastActivityTS > out[j].LastActivityTS
+			}
+			return out[i].ID < out[j].ID
+		})
+		return out
+	}
+
+	if m.sortOldestFirst {
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].LastActivityTS != out[j].LastActivityTS {
+				return out[i].LastActivityTS < out[j].LastActivityTS
+			}
+			return out[i].ID < out[j].ID
+		})
+		return out
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].LastActivityTS != out[j].LastActivityTS {
+			return out[i].LastActivityTS > out[j].LastActivityTS
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }
 
 func (m *Model) currentSelectedID() string {
@@ -947,6 +1074,12 @@ func (m Model) statusLine() string {
 			}
 		}
 	}
+	if strings.TrimSpace(m.searchQuery) == "" && !m.searchMode {
+		status += "  [sort: " + m.sortLabel() + "]"
+		status += "  [group: " + m.groupingLabel() + "]"
+	} else {
+		status += "  [order: relevance]"
+	}
 	if m.includeTools {
 		status += "  [tools]"
 	}
@@ -1168,6 +1301,32 @@ func shorten(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
+func sessionGroupKey(s index.Session) string {
+	wd := strings.TrimSpace(s.Workdir)
+	if wd == "" {
+		return "~"
+	}
+	base := filepath.Base(filepath.Clean(wd))
+	if base == "" || base == "." || base == "/" {
+		return "~"
+	}
+	return strings.ToLower(base)
+}
+
+func (m Model) sortLabel() string {
+	if m.sortOldestFirst {
+		return "oldest first"
+	}
+	return "newest first"
+}
+
+func (m Model) groupingLabel() string {
+	if m.groupByWorktree {
+		return "worktree"
+	}
+	return "flat"
+}
+
 func buildPRSnippet(session index.Session, msgs []index.Message, exportPath string) string {
 	var b strings.Builder
 	b.WriteString("### Codex transcript\n\n")
@@ -1267,25 +1426,27 @@ func panelStyle(active bool) lipgloss.Style {
 }
 
 type keyMap struct {
-	Up            key.Binding
-	Down          key.Binding
-	FocusLeft     key.Binding
-	FocusRight    key.Binding
-	Tab           key.Binding
-	PageUp        key.Binding
-	PageDown      key.Binding
-	PrevPage      key.Binding
-	NextPage      key.Binding
-	Search        key.Binding
-	Esc           key.Binding
-	ToggleHelp    key.Binding
-	Export        key.Binding
-	Copy          key.Binding
-	ToggleTools   key.Binding
-	ToggleAborted key.Binding
-	ToggleAgents  key.Binding
-	ToggleEvents  key.Binding
-	Quit          key.Binding
+	Up             key.Binding
+	Down           key.Binding
+	FocusLeft      key.Binding
+	FocusRight     key.Binding
+	Tab            key.Binding
+	ToggleSort     key.Binding
+	ToggleGrouping key.Binding
+	PageUp         key.Binding
+	PageDown       key.Binding
+	PrevPage       key.Binding
+	NextPage       key.Binding
+	Search         key.Binding
+	Esc            key.Binding
+	ToggleHelp     key.Binding
+	Export         key.Binding
+	Copy           key.Binding
+	ToggleTools    key.Binding
+	ToggleAborted  key.Binding
+	ToggleAgents   key.Binding
+	ToggleEvents   key.Binding
+	Quit           key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -1309,6 +1470,14 @@ func defaultKeys() keyMap {
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "toggle focus"),
+		),
+		ToggleSort: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "toggle sort"),
+		),
+		ToggleGrouping: key.NewBinding(
+			key.WithKeys("w"),
+			key.WithHelp("w", "toggle grouping"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup", "b"),
@@ -1370,12 +1539,12 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.Search, k.ToggleHelp, k.Copy, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.ToggleSort, k.ToggleGrouping, k.Search, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab},
+		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.ToggleSort, k.ToggleGrouping},
 		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc, k.ToggleHelp},
 		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
 	}

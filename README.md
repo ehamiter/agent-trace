@@ -46,6 +46,8 @@ Flags:
 - `up/down` or `j/k`: move in session list (when list is focused)
 - `left` / `right`: focus list / focus transcript
 - `tab`: toggle focus between list and transcript
+- `enter`: toggle sort order (`newest first` <-> `oldest first`) and reset to top
+- `w`: toggle worktree grouping on/off while preserving selected session when possible
 - `n`: next search match (or page down when no active search query)
 - `p`: previous search match (or page up when no active search query)
 - `a`: collapse/expand initial AGENTS.md instructions block in transcript view
@@ -66,5 +68,9 @@ Flags:
 - Transcript rendering is cached by session + toggles + width to avoid rerender flicker.
 - Highlighting is applied after Glamour rendering to preserve markdown styling.
 - The bottom row is reserved for status/search info; shortcuts are shown via `?` as a centered modal.
+- `enter` toggles newest/oldest sorting and `w` toggles grouping; while searching, results stay relevance-ranked.
+- In grouped mode, the first item of each new worktree group is marked with a subtle divider glyph.
+- Grouping by worktree is available via `w` and starts disabled by default.
+- In grouped mode, worktree groups are ordered by activity recency (not alphabetically).
 - If you see no sessions after upgrading, run once with `--reindex` to rebuild offsets/state.
 - Very large embedded image payloads are condensed in the TUI display to keep navigation responsive (exports still use full indexed content).
