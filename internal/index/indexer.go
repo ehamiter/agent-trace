@@ -672,60 +672,9 @@ func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
 			LIMIT ?
 		`, limit)
 	} else {
-		if i.ftsEnabled {
-			ftsQuery := buildFTSQuery(query)
-			if ftsQuery == "" {
-				ftsQuery = query
-			}
-			rows, err = i.db.Query(`
-				SELECT s.id, s.source, COALESCE(s.last_activity_ts, 0), COALESCE(s.message_count, 0), COALESCE(s.workdir, ''), COALESCE(s.preview, '')
-				FROM sessions s
-				JOIN (
-					SELECT session_id, MIN(bm25(messages_fts)) AS score
-					FROM messages_fts
-					WHERE messages_fts MATCH ?
-					GROUP BY session_id
-					ORDER BY score
-					LIMIT ?
-				) ranked ON ranked.session_id = s.id
-				WHERE COALESCE(s.message_count, 0) > 0
-				ORDER BY ranked.score, s.last_activity_ts DESC
-			`, ftsQuery, limit)
-		} else {
-			terms := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
-			if len(terms) == 0 {
-				terms = []string{strings.ToLower(strings.TrimSpace(query))}
-			}
-			if len(terms) == 0 || terms[0] == "" {
-				terms = []string{""}
-			}
-
-			var b strings.Builder
-			b.WriteString(`
-				SELECT s.id, s.source, COALESCE(s.last_activity_ts, 0), COALESCE(s.message_count, 0), COALESCE(s.workdir, ''), COALESCE(s.preview, '')
-				FROM sessions s
-				JOIN (
-					SELECT session_id, COUNT(*) AS score
-					FROM messages
-					WHERE `)
-			args := make([]any, 0, len(terms)+1)
-			for idx, term := range terms {
-				if idx > 0 {
-					b.WriteString(" OR ")
-				}
-				b.WriteString("LOWER(content) LIKE ?")
-				args = append(args, "%"+term+"%")
-			}
-			b.WriteString(`
-					GROUP BY session_id
-					ORDER BY score DESC
-					LIMIT ?
-				) ranked ON ranked.session_id = s.id
-				WHERE COALESCE(s.message_count, 0) > 0
-				ORDER BY ranked.score DESC, s.last_activity_ts DESC
-			`)
-			args = append(args, limit)
-			rows, err = i.db.Query(b.String(), args...)
+		rows, err = i.searchRows(query, limit)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if err != nil {
@@ -747,8 +696,89 @@ func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
 	return out, nil
 }
 
+func (i *Indexer) searchRows(query string, limit int) (*sql.Rows, error) {
+	if i.ftsEnabled {
+		rows, err := i.searchRowsFTS(query, limit)
+		if err == nil {
+			return rows, nil
+		}
+		fallback, fbErr := i.searchRowsLike(query, limit)
+		if fbErr != nil {
+			return nil, fmt.Errorf("list sessions search (fts and fallback failed): fts=%w, fallback=%v", err, fbErr)
+		}
+		return fallback, nil
+	}
+	return i.searchRowsLike(query, limit)
+}
+
+func (i *Indexer) searchRowsFTS(query string, limit int) (*sql.Rows, error) {
+	ftsQuery := buildFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, fmt.Errorf("empty fts query")
+	}
+	rows, err := i.db.Query(`
+		SELECT s.id, s.source, COALESCE(s.last_activity_ts, 0), COALESCE(s.message_count, 0), COALESCE(s.workdir, ''), COALESCE(s.preview, '')
+		FROM sessions s
+		JOIN (
+			SELECT session_id, MIN(bm25(messages_fts)) AS score
+			FROM messages_fts
+			WHERE messages_fts MATCH ?
+			GROUP BY session_id
+			ORDER BY score
+			LIMIT ?
+		) ranked ON ranked.session_id = s.id
+		WHERE COALESCE(s.message_count, 0) > 0
+		ORDER BY ranked.score, s.last_activity_ts DESC
+	`, ftsQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fts query failed: %w", err)
+	}
+	return rows, nil
+}
+
+func (i *Indexer) searchRowsLike(query string, limit int) (*sql.Rows, error) {
+	terms := tokenizeSearchTerms(query)
+	if len(terms) == 0 {
+		terms = []string{strings.ToLower(strings.TrimSpace(query))}
+	}
+	if len(terms) == 0 || terms[0] == "" {
+		terms = []string{""}
+	}
+
+	var b strings.Builder
+	b.WriteString(`
+		SELECT s.id, s.source, COALESCE(s.last_activity_ts, 0), COALESCE(s.message_count, 0), COALESCE(s.workdir, ''), COALESCE(s.preview, '')
+		FROM sessions s
+		JOIN (
+			SELECT session_id, COUNT(*) AS score
+			FROM messages
+			WHERE `)
+	args := make([]any, 0, len(terms)+1)
+	for idx, term := range terms {
+		if idx > 0 {
+			b.WriteString(" OR ")
+		}
+		b.WriteString("LOWER(content) LIKE ?")
+		args = append(args, "%"+term+"%")
+	}
+	b.WriteString(`
+			GROUP BY session_id
+			ORDER BY score DESC
+			LIMIT ?
+		) ranked ON ranked.session_id = s.id
+		WHERE COALESCE(s.message_count, 0) > 0
+		ORDER BY ranked.score DESC, s.last_activity_ts DESC
+	`)
+	args = append(args, limit)
+	rows, err := i.db.Query(b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("like query failed: %w", err)
+	}
+	return rows, nil
+}
+
 func buildFTSQuery(raw string) string {
-	parts := strings.Fields(strings.TrimSpace(raw))
+	parts := tokenizeSearchTerms(raw)
 	if len(parts) == 0 {
 		return ""
 	}
@@ -762,6 +792,20 @@ func buildFTSQuery(raw string) string {
 		quoted = append(quoted, fmt.Sprintf(`"%s"*`, p))
 	}
 	return strings.Join(quoted, " AND ")
+}
+
+func tokenizeSearchTerms(raw string) []string {
+	parts := strings.Fields(strings.ToLower(strings.TrimSpace(raw)))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.Trim(p, "`\"'.,:;!?()[]{}<>|")
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func (i *Indexer) GetSession(sessionID string) (Session, error) {

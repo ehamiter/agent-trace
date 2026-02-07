@@ -2,13 +2,18 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"codex-trace/internal/clipboard"
 	"codex-trace/internal/config"
 	"codex-trace/internal/export"
+	"codex-trace/internal/highlight"
 	"codex-trace/internal/index"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -48,10 +53,14 @@ type Model struct {
 	rendering      bool
 	renderNonce    int
 
-	selectedID string
-	sessions   map[string]index.Session
-	messages   map[string][]index.Message
-	rendered   map[string]string
+	selectedID  string
+	sessions    map[string]index.Session
+	messages    map[string][]index.Message
+	rendered    map[string]string
+	highlighted map[string]highlight.Result
+	matchLines  []int
+	matchCount  int
+	matchIndex  int
 
 	status string
 	err    error
@@ -77,6 +86,9 @@ type renderMsg struct {
 	rendered  string
 	nonce     int
 	err       error
+}
+type copyMsg struct {
+	err error
 }
 
 type sessionItem struct {
@@ -145,6 +157,8 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		sessions:       make(map[string]index.Session),
 		messages:       make(map[string][]index.Message),
 		rendered:       make(map[string]string),
+		highlighted:    make(map[string]highlight.Result),
+		matchIndex:     -1,
 	}
 	return m
 }
@@ -202,6 +216,40 @@ func (m Model) exportCmd(sessionID string) tea.Cmd {
 	}
 }
 
+func (m Model) copyCmd(sessionID string) tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	msgs, ok := m.messages[sessionID]
+	if !ok {
+		return nil
+	}
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	toggles := index.TranscriptToggles{
+		IncludeTools:   m.includeTools,
+		IncludeAborted: m.includeAborted,
+		IncludeEvents:  m.includeEvents,
+	}
+
+	return func() tea.Msg {
+		path, err := m.exporter.Export(session, msgs, toggles)
+		if err != nil {
+			return copyMsg{err: err}
+		}
+		snippet := buildPRSnippet(session, msgs, path)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := clipboard.Copy(ctx, snippet); err != nil {
+			return copyMsg{err: err}
+		}
+		return copyMsg{}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -252,6 +300,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Exported: " + msg.path
 		}
 
+	case copyMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			if errors.Is(msg.err, clipboard.ErrToolNotFound) {
+				m.status = "Could not copy: clipboard tool not found"
+			} else {
+				m.status = "Could not copy: " + msg.err.Error()
+			}
+		} else {
+			m.status = "Copied PR snippet to clipboard"
+		}
+
 	case renderMsg:
 		if msg.nonce != m.renderNonce {
 			break
@@ -264,8 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.rendered[msg.cacheKey] = msg.rendered
 		if m.selectedID == msg.sessionID {
-			m.viewport.SetContent(msg.rendered)
-			m.viewport.GotoTop()
+			m.setViewportFromRendered(msg.cacheKey, msg.rendered, true)
 		}
 
 	case tea.KeyMsg:
@@ -276,12 +335,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchQuery = ""
 				m.search.SetValue("")
 				m.search.Blur()
+				m.refreshViewportFromCache()
 				cmds = append(cmds, m.sessionsCmd(""))
 				return m, tea.Batch(cmds...)
 			case "enter":
 				m.searchMode = false
 				m.search.Blur()
 				m.searchQuery = strings.TrimSpace(m.search.Value())
+				m.refreshViewportFromCache()
 				cmds = append(cmds, m.sessionsCmd(m.searchQuery))
 				return m, tea.Batch(cmds...)
 			}
@@ -292,6 +353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			after := strings.TrimSpace(m.search.Value())
 			if after != strings.TrimSpace(before) {
 				m.searchQuery = after
+				m.refreshViewportFromCache()
 				cmds = append(cmds, m.sessionsCmd(after))
 			}
 			return m, tea.Batch(cmds...)
@@ -315,14 +377,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.FocusRight):
 			m.focusOnList = false
 			return m, nil
-		case key.Matches(msg, m.keys.PageUp), key.Matches(msg, m.keys.PrevPage):
+		case key.Matches(msg, m.keys.PageUp):
 			if !m.focusOnList {
 				m.viewport.HalfViewUp()
 			}
 			return m, nil
-		case key.Matches(msg, m.keys.PageDown), key.Matches(msg, m.keys.NextPage):
+		case key.Matches(msg, m.keys.PageDown):
 			if !m.focusOnList {
 				m.viewport.HalfViewDown()
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.PrevPage):
+			if !m.focusOnList {
+				if strings.TrimSpace(m.searchQuery) != "" && len(m.matchLines) > 0 {
+					m.jumpToMatch(-1)
+				} else {
+					m.viewport.HalfViewUp()
+				}
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.NextPage):
+			if !m.focusOnList {
+				if strings.TrimSpace(m.searchQuery) != "" && len(m.matchLines) > 0 {
+					m.jumpToMatch(1)
+				} else {
+					m.viewport.HalfViewDown()
+				}
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.ToggleTools):
@@ -340,6 +420,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Export):
 			if m.selectedID != "" {
 				cmds = append(cmds, m.exportCmd(m.selectedID))
+			}
+			return m, tea.Batch(cmds...)
+		case key.Matches(msg, m.keys.Copy):
+			if m.selectedID != "" {
+				cmds = append(cmds, m.copyCmd(m.selectedID))
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -416,27 +501,21 @@ func (m *Model) currentSelectedID() string {
 func (m *Model) renderSelected(force bool) tea.Cmd {
 	if m.selectedID == "" {
 		m.viewport.SetContent("No session selected")
+		m.clearMatches()
 		return nil
 	}
 
 	msgs, ok := m.messages[m.selectedID]
 	if !ok {
 		m.viewport.SetContent("Loading transcript...")
+		m.clearMatches()
 		return nil
 	}
 
-	cacheKey := fmt.Sprintf(
-		"%s|w=%d|t=%t|a=%t|e=%t|ag=%t",
-		m.selectedID,
-		m.viewport.Width,
-		m.includeTools,
-		m.includeAborted,
-		m.includeEvents,
-		m.collapseAgents,
-	)
+	cacheKey := m.renderCacheKey(m.selectedID)
 	if !force {
 		if rendered, ok := m.rendered[cacheKey]; ok {
-			m.viewport.SetContent(rendered)
+			m.setViewportFromRendered(cacheKey, rendered, false)
 			return nil
 		}
 	}
@@ -509,6 +588,116 @@ func (m Model) renderTranscriptCmd(
 			nonce:     nonce,
 		}
 	}
+}
+
+func (m Model) renderCacheKey(sessionID string) string {
+	return fmt.Sprintf(
+		"%s|w=%d|t=%t|a=%t|e=%t|ag=%t",
+		sessionID,
+		m.viewport.Width,
+		m.includeTools,
+		m.includeAborted,
+		m.includeEvents,
+		m.collapseAgents,
+	)
+}
+
+func (m Model) highlightCacheKey(cacheKey, query string) string {
+	return cacheKey + "|q=" + strings.ToLower(strings.TrimSpace(query))
+}
+
+func (m *Model) refreshViewportFromCache() {
+	if m.selectedID == "" {
+		m.clearMatches()
+		return
+	}
+	cacheKey := m.renderCacheKey(m.selectedID)
+	rendered, ok := m.rendered[cacheKey]
+	if !ok {
+		return
+	}
+	oldOffset := m.viewport.YOffset
+	m.setViewportFromRendered(cacheKey, rendered, false)
+	m.viewport.SetYOffset(m.clampViewportOffset(oldOffset))
+}
+
+func (m *Model) setViewportFromRendered(cacheKey, rendered string, gotoTop bool) {
+	content := rendered
+	query := strings.TrimSpace(m.searchQuery)
+	if query != "" {
+		hKey := m.highlightCacheKey(cacheKey, query)
+		res, ok := m.highlighted[hKey]
+		if !ok {
+			res = highlight.ApplyANSI(rendered, query, func(s string) string {
+				return searchMatchStyle.Render(s)
+			})
+			m.highlighted[hKey] = res
+		}
+		content = res.Text
+		m.setMatchMeta(res)
+	} else {
+		m.clearMatches()
+	}
+
+	m.viewport.SetContent(content)
+	if gotoTop {
+		m.viewport.GotoTop()
+		if len(m.matchLines) > 0 {
+			m.matchIndex = 0
+			m.viewport.SetYOffset(m.clampViewportOffset(m.matchLines[0]))
+		}
+	}
+}
+
+func (m *Model) setMatchMeta(res highlight.Result) {
+	if res.Count == 0 || len(res.LineIndex) == 0 {
+		m.clearMatches()
+		return
+	}
+	m.matchCount = res.Count
+	m.matchLines = append(m.matchLines[:0], res.LineIndex...)
+	if m.matchIndex < 0 || m.matchIndex >= len(m.matchLines) {
+		m.matchIndex = 0
+	}
+}
+
+func (m *Model) clearMatches() {
+	m.matchLines = nil
+	m.matchCount = 0
+	m.matchIndex = -1
+}
+
+func (m *Model) jumpToMatch(delta int) {
+	if len(m.matchLines) == 0 {
+		m.status = "No search matches in transcript"
+		return
+	}
+
+	if m.matchIndex < 0 || m.matchIndex >= len(m.matchLines) {
+		m.matchIndex = 0
+	} else if delta > 0 {
+		m.matchIndex = (m.matchIndex + 1) % len(m.matchLines)
+	} else if delta < 0 {
+		m.matchIndex = (m.matchIndex - 1 + len(m.matchLines)) % len(m.matchLines)
+	}
+
+	line := m.matchLines[m.matchIndex]
+	m.viewport.SetYOffset(m.clampViewportOffset(line))
+	m.status = fmt.Sprintf("Match %d/%d", m.matchIndex+1, m.matchCount)
+}
+
+func (m *Model) clampViewportOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		return maxOffset
+	}
+	return offset
 }
 
 func hasOnlyBoilerplateConversation(msgs []index.Message) bool {
@@ -705,6 +894,17 @@ func (m Model) statusLine() string {
 	}
 	if m.searchQuery != "" || m.searchMode {
 		status += "  [search]"
+		if strings.TrimSpace(m.searchQuery) != "" {
+			if m.matchCount > 0 {
+				cur := m.matchIndex + 1
+				if cur < 1 {
+					cur = 1
+				}
+				status += fmt.Sprintf("  [match %d/%d]", cur, m.matchCount)
+			} else {
+				status += "  [match 0]"
+			}
+		}
 	}
 	if m.includeTools {
 		status += "  [tools]"
@@ -759,11 +959,68 @@ func shorten(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
+func buildPRSnippet(session index.Session, msgs []index.Message, exportPath string) string {
+	var b strings.Builder
+	b.WriteString("### Codex transcript\n\n")
+	b.WriteString("- Session: `" + strings.TrimSpace(session.ID) + "`\n")
+	b.WriteString("- Export: `" + snippetExportPath(exportPath) + "`\n")
+	b.WriteString("- Notes: " + snippetNotes(session, msgs) + "\n")
+	return b.String()
+}
+
+func snippetExportPath(path string) string {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if idx := strings.Index(clean, "/docs/codex/"); idx >= 0 {
+		return clean[idx+1:]
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return clean
+	}
+	rel, err := filepath.Rel(wd, path)
+	if err != nil {
+		return clean
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "../") {
+		return clean
+	}
+	return rel
+}
+
+func snippetNotes(session index.Session, msgs []index.Message) string {
+	note := strings.TrimSpace(session.Preview)
+	if note == "" {
+		for _, msg := range msgs {
+			if strings.ToLower(strings.TrimSpace(msg.Role)) != "user" {
+				continue
+			}
+			lower := strings.ToLower(strings.TrimSpace(msg.Content))
+			if isLikelyEnvironmentBoilerplate(msg.Content) || strings.HasPrefix(lower, "# agents.md instructions for ") {
+				continue
+			}
+			note = strings.TrimSpace(msg.Content)
+			if note != "" {
+				break
+			}
+		}
+	}
+	if note == "" {
+		return "n/a"
+	}
+	note = strings.Join(strings.Fields(note), " ")
+	return shorten(note, 120)
+}
+
 var (
 	statusStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")).
-		Background(lipgloss.Color("24")).
-		Padding(0, 1)
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("24")).
+			Padding(0, 1)
+	searchMatchStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("16")).
+				Background(lipgloss.Color("220"))
 )
 
 func panelStyle(active bool) lipgloss.Style {
@@ -793,6 +1050,7 @@ type keyMap struct {
 	Search        key.Binding
 	Esc           key.Binding
 	Export        key.Binding
+	Copy          key.Binding
 	ToggleTools   key.Binding
 	ToggleAborted key.Binding
 	ToggleAgents  key.Binding
@@ -832,11 +1090,11 @@ func defaultKeys() keyMap {
 		),
 		PrevPage: key.NewBinding(
 			key.WithKeys("p"),
-			key.WithHelp("p", "prev page"),
+			key.WithHelp("p", "prev match/page"),
 		),
 		NextPage: key.NewBinding(
 			key.WithKeys("n"),
-			key.WithHelp("n", "next page"),
+			key.WithHelp("n", "next match/page"),
 		),
 		Search: key.NewBinding(
 			key.WithKeys("/"),
@@ -849,6 +1107,10 @@ func defaultKeys() keyMap {
 		Export: key.NewBinding(
 			key.WithKeys("e"),
 			key.WithHelp("e", "export markdown"),
+		),
+		Copy: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "copy PR snippet"),
 		),
 		ToggleTools: key.NewBinding(
 			key.WithKeys("t"),
@@ -874,13 +1136,13 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.ToggleAgents, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.NextPage, k.PrevPage, k.Search, k.Copy, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab},
 		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc},
-		{k.Export, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
+		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
 	}
 }

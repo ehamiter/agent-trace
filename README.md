@@ -9,6 +9,8 @@
 - Fallback to `$CODEX_HOME/history.jsonl` if no rollouts exist.
 - SQLite index with FTS5 search.
 - Markdown export to `docs/codex/<session-id>.md` (or `--export-dir`).
+- Search match highlighting in transcript view, with `n`/`p` match navigation.
+- Clipboard PR snippet copy (`c`) with macOS/Linux clipboard tool detection.
 - Transcript toggles for tool output (`t`) and aborted user inputs (`a`).
 
 ## Run
@@ -44,12 +46,13 @@ Flags:
 - `up/down` or `j/k`: move in session list (when list is focused)
 - `left` / `right`: focus list / focus transcript
 - `tab`: toggle focus between list and transcript
-- `n`: page down in transcript
-- `p`: page up in transcript
+- `n`: next search match (or page down when no active search query)
+- `p`: previous search match (or page up when no active search query)
 - `a`: collapse/expand initial AGENTS.md instructions block in transcript view
 - `/`: enter search mode
 - `esc`: clear search mode and query
 - `e`: export selected session
+- `c`: export + copy PR snippet to clipboard
 - `t`: toggle include tool events
 - `u`: toggle include aborted user inputs (`user_message` fallback)
 - `v`: toggle include non-message events
@@ -60,5 +63,6 @@ Flags:
 - Works fully offline and reads only local files.
 - Malformed JSONL lines are skipped safely.
 - Transcript rendering is cached by session + toggles + width to avoid rerender flicker.
+- Highlighting is applied after Glamour rendering to preserve markdown styling.
 - If you see no sessions after upgrading, run once with `--reindex` to rebuild offsets/state.
 - Very large embedded image payloads are condensed in the TUI display to keep navigation responsive (exports still use full indexed content).
