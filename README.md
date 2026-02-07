@@ -1,0 +1,60 @@
+# codex-trace
+
+`codex-trace` is a terminal UI for browsing local Codex session history and exporting transcripts to Markdown.
+
+## Features
+
+- Left pane sessions list, right pane transcript viewer.
+- Rollout-first ingestion from `$CODEX_HOME/sessions/**/rollout-*.jsonl`.
+- Fallback to `$CODEX_HOME/history.jsonl` if no rollouts exist.
+- SQLite index with FTS5 search.
+- Markdown export to `docs/codex/<session-id>.md` (or `--export-dir`).
+- Transcript toggles for tool output (`t`) and aborted user inputs (`a`).
+
+## Run
+
+```bash
+go run ./cmd/codex-trace
+```
+
+If your local SQLite build does not include FTS5, the app now falls back to non-FTS search automatically.
+To force full FTS5 search with `go-sqlite3`, run:
+
+```bash
+go run --tags sqlite_fts5 ./cmd/codex-trace --reindex
+```
+
+## Make Targets
+
+```bash
+make install   # build and install to ~/.local/bin/codex-trace
+make reindex   # run installed binary with --reindex
+make rebuild   # install + reindex in one command
+```
+
+Flags:
+
+- `--codex-home` override `CODEX_HOME` (default: env `CODEX_HOME` or `$HOME/.codex`)
+- `--db-path` SQLite DB path (default: `$CODEX_HOME/codex-history-index.sqlite`)
+- `--reindex` force DB rebuild
+- `--export-dir` override export output directory
+
+## Keybindings
+
+- `up/down` or `j/k`: move in session list (when list is focused)
+- `tab`: toggle focus between list and transcript
+- `/`: enter search mode
+- `esc`: clear search mode and query
+- `e`: export selected session
+- `t`: toggle include tool events
+- `a`: toggle include aborted user inputs (`user_message` fallback)
+- `v`: toggle include non-message events
+- `q`: quit
+
+## Notes
+
+- Works fully offline and reads only local files.
+- Malformed JSONL lines are skipped safely.
+- Transcript rendering is cached by session + toggles + width to avoid rerender flicker.
+- If you see no sessions after upgrading, run once with `--reindex` to rebuild offsets/state.
+- Very large embedded image payloads are condensed in the TUI display to keep navigation responsive (exports still use full indexed content).

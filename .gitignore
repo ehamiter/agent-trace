@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Local build outputs
+bin/
+dist/
+codex-trace
+
+# Go test/coverage artifacts
+*.test
+*.out
+coverage.out
+
+# Local SQLite files (if custom db-path points into repo)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Generated session exports (personal/local by default)
+docs/codex/*.md
