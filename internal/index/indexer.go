@@ -444,14 +444,22 @@ func (i *Indexer) computeSessionSummary(ctx context.Context, tx *sql.Tx, session
 	row := tx.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(MAX(COALESCE(ts, 0)), 0) AS last_ts,
-			COALESCE(SUM(CASE WHEN type = 'message' AND role IN ('user','assistant') THEN 1 ELSE 0 END), 0) AS canonical_count,
 			COALESCE((SELECT source FROM messages m2 WHERE m2.session_id = ? ORDER BY m2.id DESC LIMIT 1), 'unknown')
 		FROM messages
 		WHERE session_id = ?
 	`, sessionID, sessionID)
 
-	if err := row.Scan(&session.LastActivityTS, &session.MessageCount, &session.Source); err != nil {
+	if err := row.Scan(&session.LastActivityTS, &session.Source); err != nil {
 		return session, fmt.Errorf("summary for session %s: %w", sessionID, err)
+	}
+	hasRealUser, err := hasRealUserMessage(ctx, tx, sessionID)
+	if err != nil {
+		return session, fmt.Errorf("real-user check for session %s: %w", sessionID, err)
+	}
+	if hasRealUser {
+		session.MessageCount = countConversationalMessages(ctx, tx, sessionID)
+	} else {
+		session.MessageCount = 0
 	}
 
 	_ = tx.QueryRowContext(ctx, `
@@ -460,23 +468,12 @@ func (i *Indexer) computeSessionSummary(ctx context.Context, tx *sql.Tx, session
 		ORDER BY id DESC
 		LIMIT 1
 	`, sessionID).Scan(&session.Workdir)
-
-	preview := ""
-	_ = tx.QueryRowContext(ctx, `
-		SELECT content FROM messages
-		WHERE session_id = ? AND role = 'user' AND type = 'message'
-		ORDER BY id ASC
-		LIMIT 1
-	`, sessionID).Scan(&preview)
-	if preview == "" {
-		_ = tx.QueryRowContext(ctx, `
-			SELECT content FROM messages
-			WHERE session_id = ? AND role = 'user'
-			ORDER BY id DESC
-			LIMIT 1
-		`, sessionID).Scan(&preview)
+	if session.Workdir == "" {
+		if inferred, err := inferWorkdirFromSessionContent(ctx, tx, sessionID); err == nil {
+			session.Workdir = inferred
+		}
 	}
-	session.Preview = trimPreview(preview)
+	session.Preview = trimPreview(pickSessionPreview(ctx, tx, sessionID))
 	return session, nil
 }
 
@@ -486,6 +483,173 @@ func trimPreview(s string) string {
 		return s
 	}
 	return s[:117] + "..."
+}
+
+func pickSessionPreview(ctx context.Context, tx *sql.Tx, sessionID string) string {
+	queries := []struct {
+		sql  string
+		args []any
+	}{
+		{
+			sql: `
+				SELECT content FROM messages
+				WHERE session_id = ? AND role = 'user' AND type = 'message'
+				ORDER BY id ASC
+				LIMIT 40
+			`,
+			args: []any{sessionID},
+		},
+		{
+			sql: `
+				SELECT content FROM messages
+				WHERE session_id = ? AND role = 'user'
+				ORDER BY id DESC
+				LIMIT 40
+			`,
+			args: []any{sessionID},
+		},
+	}
+
+	for _, q := range queries {
+		rows, err := tx.QueryContext(ctx, q.sql, q.args...)
+		if err != nil {
+			continue
+		}
+		var candidate string
+		for rows.Next() {
+			if err := rows.Scan(&candidate); err != nil {
+				continue
+			}
+			if isNonConversationalPreviewContent(candidate) {
+				continue
+			}
+			_ = rows.Close()
+			return candidate
+		}
+		_ = rows.Close()
+	}
+	return ""
+}
+
+func countConversationalMessages(ctx context.Context, tx *sql.Tx, sessionID string) int {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT role, content
+		FROM messages
+		WHERE session_id = ? AND type = 'message' AND role IN ('user', 'assistant')
+	`, sessionID)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var role, content string
+		if err := rows.Scan(&role, &content); err != nil {
+			continue
+		}
+		content = strings.TrimSpace(content)
+		if content == "" {
+			continue
+		}
+		if role == "assistant" {
+			count++
+			continue
+		}
+		if role == "user" && !isNonConversationalPreviewContent(content) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasRealUserMessage(ctx context.Context, tx *sql.Tx, sessionID string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT content
+		FROM messages
+		WHERE session_id = ? AND type = 'message' AND role = 'user'
+	`, sessionID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			continue
+		}
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		if !isNonConversationalPreviewContent(content) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func inferWorkdirFromSessionContent(ctx context.Context, tx *sql.Tx, sessionID string) (string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT content FROM messages
+		WHERE session_id = ? AND role = 'user'
+		ORDER BY id ASC
+		LIMIT 40
+	`, sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			continue
+		}
+		if wd := extractWorkdirFromContent(content); wd != "" {
+			return wd, nil
+		}
+	}
+	return "", rows.Err()
+}
+
+func extractWorkdirFromContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+
+	if start := strings.Index(lower, "<cwd>"); start >= 0 {
+		start += len("<cwd>")
+		endRel := strings.Index(lower[start:], "</cwd>")
+		if endRel >= 0 {
+			if wd := strings.TrimSpace(content[start : start+endRel]); looksLikePath(wd) {
+				return wd
+			}
+		}
+	}
+
+	if strings.HasPrefix(lower, "<environment_context>") {
+		inner := content
+		inner = strings.TrimPrefix(inner, "<environment_context>")
+		innerLower := strings.ToLower(inner)
+		if end := strings.Index(innerLower, "</environment_context>"); end >= 0 {
+			inner = inner[:end]
+		}
+		for _, token := range strings.Fields(inner) {
+			if looksLikePath(token) {
+				return token
+			}
+		}
+	}
+
+	return ""
+}
+
+func looksLikePath(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~/")
 }
 
 func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
@@ -503,6 +667,7 @@ func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
 		rows, err = i.db.Query(`
 			SELECT id, source, COALESCE(last_activity_ts, 0), COALESCE(message_count, 0), COALESCE(workdir, ''), COALESCE(preview, '')
 			FROM sessions
+			WHERE COALESCE(message_count, 0) > 0
 			ORDER BY last_activity_ts DESC, id
 			LIMIT ?
 		`, limit)
@@ -523,6 +688,7 @@ func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
 					ORDER BY score
 					LIMIT ?
 				) ranked ON ranked.session_id = s.id
+				WHERE COALESCE(s.message_count, 0) > 0
 				ORDER BY ranked.score, s.last_activity_ts DESC
 			`, ftsQuery, limit)
 		} else {
@@ -555,6 +721,7 @@ func (i *Indexer) ListSessions(query string, limit int) ([]Session, error) {
 					ORDER BY score DESC
 					LIMIT ?
 				) ranked ON ranked.session_id = s.id
+				WHERE COALESCE(s.message_count, 0) > 0
 				ORDER BY ranked.score DESC, s.last_activity_ts DESC
 			`)
 			args = append(args, limit)

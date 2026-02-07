@@ -44,6 +44,7 @@ type Model struct {
 	includeTools   bool
 	includeAborted bool
 	includeEvents  bool
+	collapseAgents bool
 	rendering      bool
 	renderNonce    int
 
@@ -138,11 +139,12 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		search:   ti,
 		keys:     defaultKeys(),
 
-		indexing:    true,
-		focusOnList: true,
-		sessions:    make(map[string]index.Session),
-		messages:    make(map[string][]index.Message),
-		rendered:    make(map[string]string),
+		indexing:       true,
+		focusOnList:    true,
+		collapseAgents: true,
+		sessions:       make(map[string]index.Session),
+		messages:       make(map[string][]index.Message),
+		rendered:       make(map[string]string),
 	}
 	return m
 }
@@ -329,6 +331,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.ToggleAborted):
 			m.includeAborted = !m.includeAborted
 			return m, m.renderSelected(true)
+		case key.Matches(msg, m.keys.ToggleAgents):
+			m.collapseAgents = !m.collapseAgents
+			return m, m.renderSelected(true)
 		case key.Matches(msg, m.keys.ToggleEvents):
 			m.includeEvents = !m.includeEvents
 			return m, m.renderSelected(true)
@@ -420,7 +425,15 @@ func (m *Model) renderSelected(force bool) tea.Cmd {
 		return nil
 	}
 
-	cacheKey := fmt.Sprintf("%s|w=%d|t=%t|a=%t|e=%t", m.selectedID, m.viewport.Width, m.includeTools, m.includeAborted, m.includeEvents)
+	cacheKey := fmt.Sprintf(
+		"%s|w=%d|t=%t|a=%t|e=%t|ag=%t",
+		m.selectedID,
+		m.viewport.Width,
+		m.includeTools,
+		m.includeAborted,
+		m.includeEvents,
+		m.collapseAgents,
+	)
 	if !force {
 		if rendered, ok := m.rendered[cacheKey]; ok {
 			m.viewport.SetContent(rendered)
@@ -441,22 +454,28 @@ func (m *Model) renderSelected(force bool) tea.Cmd {
 		wrap = 20
 	}
 	sessionID := m.selectedID
-	return m.renderTranscriptCmd(sessionID, cacheKey, msgs, toggles, wrap, nonce)
+	return m.renderTranscriptCmd(sessionID, cacheKey, msgs, toggles, m.collapseAgents, wrap, nonce)
 }
 
 func (m Model) renderTranscriptCmd(
 	sessionID, cacheKey string,
 	msgs []index.Message,
 	toggles index.TranscriptToggles,
+	collapseAgents bool,
 	wrap int,
 	nonce int,
 ) tea.Cmd {
 	return func() tea.Msg {
+		filtered := index.FilterMessages(msgs, toggles)
 		md := export.BuildTranscriptMarkdown(msgs, toggles)
 		if strings.TrimSpace(md) == "" {
-			md = "_No transcript content with current filters._"
+			if hasOnlyBoilerplateConversation(msgs) {
+				md = "_Session contains only environment/turn boilerplate and no conversational turns._"
+			} else if len(filtered) == 0 {
+				md = "_No transcript content with current filters._"
+			}
 		}
-		md = sanitizeMarkdownForDisplay(md)
+		md = sanitizeMarkdownForDisplay(md, collapseAgents)
 
 		if len(md) > 500_000 {
 			return renderMsg{
@@ -492,7 +511,41 @@ func (m Model) renderTranscriptCmd(
 	}
 }
 
-func sanitizeMarkdownForDisplay(md string) string {
+func hasOnlyBoilerplateConversation(msgs []index.Message) bool {
+	hasCanonical := false
+	for _, m := range msgs {
+		if m.Type != "message" || (m.Role != "user" && m.Role != "assistant") {
+			continue
+		}
+		hasCanonical = true
+		if m.Role == "assistant" {
+			return false
+		}
+		if !isLikelyEnvironmentBoilerplate(m.Content) {
+			return false
+		}
+	}
+	return hasCanonical
+}
+
+func isLikelyEnvironmentBoilerplate(content string) bool {
+	c := strings.ToLower(strings.TrimSpace(content))
+	if c == "" {
+		return true
+	}
+	if strings.HasPrefix(c, "<environment_context>") {
+		return true
+	}
+	if strings.HasPrefix(c, "<turn_aborted>") {
+		return true
+	}
+	return strings.Contains(c, "<environment_context>") && strings.Contains(c, "<cwd>")
+}
+
+func sanitizeMarkdownForDisplay(md string, collapseAgents bool) string {
+	if collapseAgents {
+		md = collapseInitialAgentsBlock(md)
+	}
 	md = stripEmbeddedImageData(md)
 	md = clampLongLines(md, 8000)
 	const maxDisplayChars = 1_000_000
@@ -502,6 +555,30 @@ func sanitizeMarkdownForDisplay(md string) string {
 	trimmed := md[:maxDisplayChars]
 	trimmed = strings.TrimRight(trimmed, "\n")
 	return trimmed + "\n\n... [transcript truncated for display; use export for full content] ...\n"
+}
+
+func collapseInitialAgentsBlock(md string) string {
+	marker := "# AGENTS.md instructions for "
+	start := strings.Index(md, marker)
+	if start < 0 {
+		return md
+	}
+
+	end := -1
+	if closeIdx := strings.Index(md[start:], "</INSTRUCTIONS>"); closeIdx >= 0 {
+		end = start + closeIdx + len("</INSTRUCTIONS>")
+	}
+	if end < 0 {
+		if nextSectionIdx := strings.Index(md[start:], "\n## "); nextSectionIdx >= 0 {
+			end = start + nextSectionIdx
+		}
+	}
+	if end < 0 {
+		end = len(md)
+	}
+
+	replacement := "\n> [AGENTS.md instructions collapsed. Press `a` to expand.]\n"
+	return md[:start] + replacement + md[end:]
 }
 
 func stripEmbeddedImageData(s string) string {
@@ -635,6 +712,9 @@ func (m Model) statusLine() string {
 	if m.includeAborted {
 		status += "  [aborted]"
 	}
+	if m.collapseAgents {
+		status += "  [agents-collapsed]"
+	}
 	if m.includeEvents {
 		status += "  [events]"
 	}
@@ -715,6 +795,7 @@ type keyMap struct {
 	Export        key.Binding
 	ToggleTools   key.Binding
 	ToggleAborted key.Binding
+	ToggleAgents  key.Binding
 	ToggleEvents  key.Binding
 	Quit          key.Binding
 }
@@ -774,8 +855,12 @@ func defaultKeys() keyMap {
 			key.WithHelp("t", "toggle tools"),
 		),
 		ToggleAborted: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "toggle aborted"),
+		),
+		ToggleAgents: key.NewBinding(
 			key.WithKeys("a"),
-			key.WithHelp("a", "toggle aborted"),
+			key.WithHelp("a", "agents expand/collapse"),
 		),
 		ToggleEvents: key.NewBinding(
 			key.WithKeys("v"),
@@ -789,13 +874,13 @@ func defaultKeys() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.ToggleAgents, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab},
 		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc},
-		{k.Export, k.ToggleTools, k.ToggleAborted, k.ToggleEvents, k.Quit},
+		{k.Export, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
 	}
 }

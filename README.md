@@ -46,11 +46,12 @@ Flags:
 - `tab`: toggle focus between list and transcript
 - `n`: page down in transcript
 - `p`: page up in transcript
+- `a`: collapse/expand initial AGENTS.md instructions block in transcript view
 - `/`: enter search mode
 - `esc`: clear search mode and query
 - `e`: export selected session
 - `t`: toggle include tool events
-- `a`: toggle include aborted user inputs (`user_message` fallback)
+- `u`: toggle include aborted user inputs (`user_message` fallback)
 - `v`: toggle include non-message events
 - `q`: quit
 
