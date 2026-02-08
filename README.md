@@ -8,6 +8,11 @@
   </a>
 </p>
 
+## Implementation
+
+The MVP for this app was created via Codex 5.3: `execute SPECS.md`. I have modified a few things during testing to give what I feel is more of a natural flow of reviewing text, searching for things, and logically grouping worktrees together.
+
+
 ## Features
 
 - Left pane sessions list, right pane transcript viewer.
