@@ -1,4 +1,4 @@
-module codex-trace
+module agent-trace
 
 go 1.23
 

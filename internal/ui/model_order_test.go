@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codex-trace/internal/index"
+	"agent-trace/internal/index"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"

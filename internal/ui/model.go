@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"codex-trace/internal/clipboard"
-	"codex-trace/internal/config"
-	"codex-trace/internal/export"
-	"codex-trace/internal/highlight"
-	"codex-trace/internal/index"
+	"agent-trace/internal/clipboard"
+	"agent-trace/internal/config"
+	"agent-trace/internal/export"
+	"agent-trace/internal/highlight"
+	"agent-trace/internal/index"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -106,6 +106,11 @@ func (i sessionItem) Title() string {
 	if i.groupDivider {
 		prefix = "┈ "
 	}
+	dot := codexDotStyle.Render("○") + " "
+	if i.s.Source == "claude" {
+		dot = claudeDotStyle.Render("●") + " "
+	}
+	prefix += dot
 	if i.s.Workdir != "" {
 		base := filepath.Base(i.s.Workdir)
 		if base != "." && base != "/" {
@@ -137,7 +142,7 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 	l.DisableQuitKeybindings()
 
 	vp := viewport.New(60, 20)
-	vp.SetContent("Indexing Codex history...")
+	vp.SetContent("Indexing sessions...")
 
 	h := help.New()
 	h.ShowAll = false
@@ -522,7 +527,7 @@ func (m *Model) applySessions(in []index.Session) {
 	if len(ordered) == 0 {
 		m.selectedID = ""
 		if strings.TrimSpace(m.searchQuery) == "" {
-			m.viewport.SetContent("No sessions found.\n\nTip: run with --reindex to force rebuilding from rollout logs.")
+			m.viewport.SetContent("No sessions found.\n\nTip: run with --reindex to force rebuilding the index.")
 		} else {
 			m.viewport.SetContent("No sessions matched your search.")
 		}
@@ -673,7 +678,11 @@ func (m *Model) renderSelected(force bool) tea.Cmd {
 		wrap = 20
 	}
 	sessionID := m.selectedID
-	return m.renderTranscriptCmd(sessionID, cacheKey, msgs, toggles, m.collapseAgents, wrap, nonce)
+	source := ""
+	if s, ok := m.sessions[sessionID]; ok {
+		source = s.Source
+	}
+	return m.renderTranscriptCmd(sessionID, cacheKey, msgs, toggles, m.collapseAgents, wrap, nonce, source)
 }
 
 func (m Model) renderTranscriptCmd(
@@ -683,10 +692,11 @@ func (m Model) renderTranscriptCmd(
 	collapseAgents bool,
 	wrap int,
 	nonce int,
+	source string,
 ) tea.Cmd {
 	return func() tea.Msg {
 		filtered := index.FilterMessages(msgs, toggles)
-		md := export.BuildTranscriptMarkdown(msgs, toggles)
+		md := export.BuildTranscriptMarkdown(msgs, toggles, source)
 		md = prependCollapsedEventsHint(md, msgs, toggles)
 		if strings.TrimSpace(md) == "" {
 			if hasOnlyBoilerplateConversation(msgs) {
@@ -1318,7 +1328,11 @@ func (m Model) groupingLabel() string {
 
 func buildPRSnippet(session index.Session, msgs []index.Message, exportPath string) string {
 	var b strings.Builder
-	b.WriteString("### Codex transcript\n\n")
+	heading := "Codex"
+	if session.Source == "claude" {
+		heading = "Claude"
+	}
+	b.WriteString("### " + heading + " transcript\n\n")
 	b.WriteString("- Session: `" + strings.TrimSpace(session.ID) + "`\n")
 	b.WriteString("- Export: `" + snippetExportPath(exportPath) + "`\n")
 	b.WriteString("- Notes: " + snippetNotes(session, msgs) + "\n")
@@ -1328,6 +1342,9 @@ func buildPRSnippet(session index.Session, msgs []index.Message, exportPath stri
 func snippetExportPath(path string) string {
 	clean := filepath.ToSlash(filepath.Clean(path))
 	if idx := strings.Index(clean, "/docs/codex/"); idx >= 0 {
+		return clean[idx+1:]
+	}
+	if idx := strings.Index(clean, "/docs/claude/"); idx >= 0 {
 		return clean[idx+1:]
 	}
 	wd, err := os.Getwd()
@@ -1383,6 +1400,10 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("16")).
 				Background(lipgloss.Color("220"))
+	claudeDotStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("141"))
+	codexDotStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214"))
 )
 
 func shortcutsModalStyle() lipgloss.Style {

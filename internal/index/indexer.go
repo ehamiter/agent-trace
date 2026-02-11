@@ -16,13 +16,14 @@ import (
 
 type Indexer struct {
 	codexHome  string
+	claudeHome string
 	dbPath     string
 	db         *sql.DB
 	ftsEnabled bool
 	mu         sync.Mutex
 }
 
-func New(codexHome, dbPath string, reindex bool) (*Indexer, error) {
+func New(codexHome, claudeHome, dbPath string, reindex bool) (*Indexer, error) {
 	if reindex {
 		_ = os.Remove(dbPath)
 	}
@@ -32,7 +33,7 @@ func New(codexHome, dbPath string, reindex bool) (*Indexer, error) {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
-	i := &Indexer{codexHome: codexHome, dbPath: dbPath, db: db}
+	i := &Indexer{codexHome: codexHome, claudeHome: claudeHome, dbPath: dbPath, db: db}
 	if err := i.initSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -132,7 +133,7 @@ func (i *Indexer) BuildIndex(ctx context.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	sources, err := discoverSources(i.codexHome)
+	sources, err := discoverAllSources(i.codexHome, i.claudeHome)
 	if err != nil {
 		return fmt.Errorf("discover sources: %w", err)
 	}
@@ -249,7 +250,12 @@ func (i *Indexer) ingestFile(ctx context.Context, src sourceFile) error {
 		}
 
 		line := scanner.Bytes()
-		events, err := parseJSONLLine(line, src.Path)
+		var events []parsedEvent
+		if src.Source == "claude" {
+			events, err = parseClaudeJSONLLine(line, src.Path)
+		} else {
+			events, err = parseJSONLLine(line, src.Path)
+		}
 		if err != nil {
 			continue
 		}
@@ -471,6 +477,17 @@ func (i *Indexer) computeSessionSummary(ctx context.Context, tx *sql.Tx, session
 	if session.Workdir == "" {
 		if inferred, err := inferWorkdirFromSessionContent(ctx, tx, sessionID); err == nil {
 			session.Workdir = inferred
+		}
+	}
+	if session.Workdir == "" && session.Source == "claude" {
+		var sourcePath string
+		_ = tx.QueryRowContext(ctx, `
+			SELECT source_path FROM messages
+			WHERE session_id = ? AND source_path IS NOT NULL AND source_path != ''
+			LIMIT 1
+		`, sessionID).Scan(&sourcePath)
+		if sourcePath != "" {
+			session.Workdir = workdirFromClaudePath(sourcePath)
 		}
 	}
 	session.Preview = trimPreview(pickSessionPreview(ctx, tx, sessionID))

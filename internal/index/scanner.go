@@ -13,7 +13,19 @@ type sourceFile struct {
 	Source string
 }
 
-func discoverSources(codexHome string) ([]sourceFile, error) {
+func discoverAllSources(codexHome, claudeHome string) ([]sourceFile, error) {
+	codex, err := discoverCodexSources(codexHome)
+	if err != nil {
+		return nil, err
+	}
+	claude, err := discoverClaudeSources(claudeHome)
+	if err != nil {
+		return nil, err
+	}
+	return append(codex, claude...), nil
+}
+
+func discoverCodexSources(codexHome string) ([]sourceFile, error) {
 	sessionsRoot := filepath.Join(codexHome, "sessions")
 	rollouts := make([]sourceFile, 0, 64)
 
@@ -44,4 +56,31 @@ func discoverSources(codexHome string) ([]sourceFile, error) {
 		return []sourceFile{{Path: historyPath, Source: "history"}}, nil
 	}
 	return nil, nil
+}
+
+func discoverClaudeSources(claudeHome string) ([]sourceFile, error) {
+	projectsRoot := filepath.Join(claudeHome, "projects")
+	var sources []sourceFile
+
+	_ = filepath.WalkDir(projectsRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == "subagents" || name == "memory" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(d.Name()), ".jsonl") {
+			sources = append(sources, sourceFile{Path: path, Source: "claude"})
+		}
+		return nil
+	})
+
+	sort.Slice(sources, func(i, j int) bool {
+		return sources[i].Path < sources[j].Path
+	})
+	return sources, nil
 }

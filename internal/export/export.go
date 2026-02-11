@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"codex-trace/internal/index"
+	"agent-trace/internal/index"
 )
 
 type Exporter struct {
@@ -33,7 +33,7 @@ func (e *Exporter) Export(session index.Session, messages []index.Message, toggl
 		return "", fmt.Errorf("create export directory: %w", err)
 	}
 
-	body := BuildTranscriptMarkdown(messages, toggles)
+	body := BuildTranscriptMarkdown(messages, toggles, session.Source)
 	md := BuildSessionMarkdown(session, body, time.Now().UTC())
 	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
 		return "", fmt.Errorf("write export file: %w", err)
@@ -41,9 +41,15 @@ func (e *Exporter) Export(session index.Session, messages []index.Message, toggl
 	return path, nil
 }
 
-func BuildTranscriptMarkdown(messages []index.Message, toggles index.TranscriptToggles) string {
+func BuildTranscriptMarkdown(messages []index.Message, toggles index.TranscriptToggles, source string) string {
 	filtered := index.FilterMessages(messages, toggles)
 	var b strings.Builder
+
+	assistantHeader := "## Codex"
+	if source == "claude" {
+		assistantHeader = "## Claude"
+	}
+
 	for _, m := range filtered {
 		content := strings.TrimSpace(m.Content)
 		if m.Role == "user" {
@@ -62,7 +68,7 @@ func BuildTranscriptMarkdown(messages []index.Message, toggles index.TranscriptT
 			b.WriteString(header + "\n\n")
 			b.WriteString(content + "\n\n")
 		case "assistant":
-			b.WriteString("## Codex\n\n")
+			b.WriteString(assistantHeader + "\n\n")
 			b.WriteString(content + "\n\n")
 		default:
 			title := "## Event"
@@ -171,7 +177,11 @@ func agentsFileExists(path string) bool {
 
 func BuildSessionMarkdown(session index.Session, transcript string, now time.Time) string {
 	var b strings.Builder
-	b.WriteString("# Codex session " + session.ID + "\n\n")
+	heading := "Codex"
+	if session.Source == "claude" {
+		heading = "Claude"
+	}
+	b.WriteString("# " + heading + " session " + session.ID + "\n\n")
 	b.WriteString("Exported: " + now.Format(time.RFC3339) + "\n\n")
 	b.WriteString("```text\n")
 	b.WriteString("source: " + safeValue(session.Source) + "\n")
@@ -200,7 +210,11 @@ func (e *Exporter) outputPath(session index.Session) (string, error) {
 			root = repoRoot
 		}
 	}
-	return filepath.Join(root, "docs", "codex", safeFileName(session.ID)+".md"), nil
+	subdir := "codex"
+	if session.Source == "claude" {
+		subdir = "claude"
+	}
+	return filepath.Join(root, "docs", subdir, safeFileName(session.ID)+".md"), nil
 }
 
 func findRepoRoot(start string) string {

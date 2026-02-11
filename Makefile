@@ -2,8 +2,8 @@ SHELL := /bin/bash
 
 GO ?= go
 GO_TAGS ?= sqlite_fts5
-BINARY := codex-trace
-CMD_PATH := ./cmd/codex-trace
+BINARY := agent-trace
+CMD_PATH := ./cmd/agent-trace
 INSTALL_DIR ?= $(HOME)/.local/bin
 INSTALL_PATH := $(INSTALL_DIR)/$(BINARY)
 LOCAL_BIN := ./bin/$(BINARY)

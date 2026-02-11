@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codex-trace/internal/index"
+	"agent-trace/internal/index"
 )
 
 func TestBuildTranscriptMarkdown_StripsUnstructuredAgentsHeading(t *testing.T) {
@@ -19,7 +19,7 @@ func TestBuildTranscriptMarkdown_StripsUnstructuredAgentsHeading(t *testing.T) {
 		{Role: "assistant", Type: "message", Content: "ok"},
 	}
 
-	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{})
+	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{}, "")
 	if strings.Contains(strings.ToLower(out), "# agents.md instructions for ") {
 		t.Fatalf("expected unstructured AGENTS heading to be removed, got:\n%s", out)
 	}
@@ -38,7 +38,7 @@ func TestBuildTranscriptMarkdown_StripsUnstructuredAgentsHeadingWithoutHash(t *t
 		{Role: "assistant", Type: "message", Content: "ok"},
 	}
 
-	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{})
+	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{}, "")
 	if strings.Contains(strings.ToLower(out), "agents.md instructions for /tmp/repo") {
 		t.Fatalf("expected AGENTS heading line to be removed, got:\n%s", out)
 	}
@@ -61,7 +61,7 @@ func TestBuildTranscriptMarkdown_PreservesStructuredAgentsBlock(t *testing.T) {
 		},
 	}
 
-	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{})
+	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{}, "")
 	if !strings.Contains(out, "<INSTRUCTIONS>") {
 		t.Fatalf("expected structured AGENTS block to be preserved, got:\n%s", out)
 	}
@@ -79,7 +79,7 @@ func TestBuildTranscriptMarkdown_StripsStaleStructuredAgentsBlock(t *testing.T) 
 		},
 	}
 
-	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{})
+	out := BuildTranscriptMarkdown(msgs, index.TranscriptToggles{}, "")
 	if strings.Contains(strings.ToLower(out), "agents.md instructions for") {
 		t.Fatalf("expected stale AGENTS heading to be removed, got:\n%s", out)
 	}

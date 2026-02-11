@@ -4,7 +4,7 @@
 # Local build outputs
 bin/
 dist/
-codex-trace
+agent-trace
 
 # Go test/coverage artifacts
 *.test
@@ -18,3 +18,5 @@ coverage.out
 
 # Generated session exports (personal/local by default)
 docs/codex/*.md
+docs/claude/*.md
+.claude/
