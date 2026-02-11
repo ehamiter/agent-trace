@@ -65,6 +65,7 @@ Flags:
 - `?`: toggle centered keyboard-shortcuts modal
 - `x`: export selected session
 - `c`: export + copy PR snippet to clipboard
+- `s`: toggle source: all -> Claude -> Codex
 - `t`: toggle include tool events
 - `u`: toggle include aborted user inputs (`user_message` fallback)
 - `e`: toggle include non-message events
