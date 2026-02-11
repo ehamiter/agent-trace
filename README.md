@@ -1,25 +1,23 @@
-# codex-trace
+# agent-trace
 
-`codex-trace` is a terminal UI for browsing local Codex session history and exporting transcripts to Markdown.
+`agent-trace` is a terminal UI for browsing local Codex & Claude session histories and exporting transcripts to Markdown.
 
 <p align="center">
-  <a href="codex-trace.png">
-    <img src="codex-trace.png" alt="codex-trace terminal UI screenshot" width="1100" />
+  <a href="agent-trace.png">
+    <img src="agent-trace.png" alt="agent-trace terminal UI screenshot" width="1100" />
   </a>
 </p>
 
 ## Implementation
 
-The MVP for this app was created via Codex 5.3: `execute SPECS.md`. I have modified a few things during testing to give what I feel is more of a natural flow of reviewing text, searching for things, and logically grouping worktrees together.
+The original MVP for this app was created via Codex 5.3: `execute SPECS.md`. Claude support was introduced via Claude Opus 4.6.
 
 
 ## Features
 
 - Left pane sessions list, right pane transcript viewer.
-- Rollout-first ingestion from `$CODEX_HOME/sessions/**/rollout-*.jsonl`.
-- Fallback to `$CODEX_HOME/history.jsonl` if no rollouts exist.
 - SQLite index with FTS5 search.
-- Markdown export to `docs/codex/<session-id>.md` (or `--export-dir`).
+- Markdown export to `docs/<agent>/<session-id>.md` (or `--export-dir`).
 - Search match highlighting in transcript view, with `n`/`p` match navigation.
 - Clipboard PR snippet copy (`c`) with macOS/Linux clipboard tool detection.
 - Transcript toggles for tool output (`t`) and aborted user inputs (`a`).
@@ -27,20 +25,20 @@ The MVP for this app was created via Codex 5.3: `execute SPECS.md`. I have modif
 ## Run
 
 ```bash
-go run ./cmd/codex-trace
+go run ./cmd/agent-trace
 ```
 
 If your local SQLite build does not include FTS5, the app now falls back to non-FTS search automatically.
 To force full FTS5 search with `go-sqlite3`, run:
 
 ```bash
-go run --tags sqlite_fts5 ./cmd/codex-trace --reindex
+go run --tags sqlite_fts5 ./cmd/agent-trace --reindex
 ```
 
 ## Make Targets
 
 ```bash
-make install   # build and install to ~/.local/bin/codex-trace
+make install   # build and install to ~/.local/bin/agent-trace
 make reindex   # run installed binary with --reindex
 make rebuild   # install + reindex in one command
 ```
