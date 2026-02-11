@@ -205,14 +205,13 @@ func (e *Exporter) outputPath(session index.Session) (string, error) {
 	}
 
 	root := e.cwd
-	if session.Workdir != "" {
-		if repoRoot := findRepoRoot(session.Workdir); repoRoot != "" {
-			root = repoRoot
-		}
-	}
 	subdir := "codex"
 	if session.Source == "claude" {
 		subdir = "claude"
+	} else if session.Workdir != "" {
+		if repoRoot := findRepoRoot(session.Workdir); repoRoot != "" {
+			root = repoRoot
+		}
 	}
 	return filepath.Join(root, "docs", subdir, safeFileName(session.ID)+".md"), nil
 }
