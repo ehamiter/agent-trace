@@ -54,11 +54,13 @@ type Model struct {
 	collapseAgents  bool
 	sortOldestFirst bool
 	groupByWorktree bool
+	sourceFilter    int // 0=all, 1=claude only, 2=codex only
 	showKeyHelp     bool
 	rendering       bool
 	renderNonce     int
 
 	selectedID  string
+	allSessions map[string]index.Session
 	sessions    map[string]index.Session
 	messages    map[string][]index.Message
 	rendered    map[string]string
@@ -171,6 +173,7 @@ func NewModel(cfg config.AppConfig, idx *index.Indexer, exp *export.Exporter) Mo
 		collapseAgents:  true,
 		sortOldestFirst: false,
 		groupByWorktree: false,
+		allSessions:     make(map[string]index.Session),
 		sessions:        make(map[string]index.Session),
 		messages:        make(map[string][]index.Message),
 		rendered:        make(map[string]string),
@@ -464,6 +467,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.ToggleEvents):
 			m.includeEvents = !m.includeEvents
 			return m, m.renderSelected(true)
+		case key.Matches(msg, m.keys.CycleSource):
+			m.sourceFilter = (m.sourceFilter + 1) % 3
+			m.selectedID = ""
+			m.applySessionsFromMap()
+			m.status = "Source: " + m.sourceFilterLabel()
+			return m, nil
 		case key.Matches(msg, m.keys.Export):
 			if m.selectedID != "" {
 				cmds = append(cmds, m.exportCmd(m.selectedID))
@@ -506,10 +515,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applySessions(in []index.Session) {
-	ordered := m.orderedSessions(in)
+	// Store unfiltered set for source-filter cycling.
+	m.allSessions = make(map[string]index.Session, len(in))
+	for _, s := range in {
+		m.allSessions[s.ID] = s
+	}
 
-	items := make([]list.Item, 0, len(in))
-	m.sessions = make(map[string]index.Session, len(in))
+	filtered := m.filterBySource(in)
+	ordered := m.orderedSessions(filtered)
+
+	items := make([]list.Item, 0, len(ordered))
+	m.sessions = make(map[string]index.Session, len(ordered))
 	prevGroup := ""
 	groupedMode := m.groupByWorktree && strings.TrimSpace(m.searchQuery) == "" && !m.searchMode
 	for idx, s := range ordered {
@@ -548,11 +564,11 @@ func (m *Model) applySessions(in []index.Session) {
 }
 
 func (m *Model) applySessionsFromMap() {
-	if len(m.sessions) == 0 {
+	if len(m.allSessions) == 0 {
 		return
 	}
-	all := make([]index.Session, 0, len(m.sessions))
-	for _, s := range m.sessions {
+	all := make([]index.Session, 0, len(m.allSessions))
+	for _, s := range m.allSessions {
 		all = append(all, s)
 	}
 	m.applySessions(all)
@@ -1130,6 +1146,9 @@ func (m Model) statusLine() string {
 	} else {
 		status += "  [order: relevance]"
 	}
+	if m.sourceFilter != 0 {
+		status += "  [source: " + m.sourceFilterLabel() + "]"
+	}
 	if m.includeTools {
 		status += "  [tools]"
 	}
@@ -1326,6 +1345,39 @@ func (m Model) groupingLabel() string {
 	return "flat"
 }
 
+func (m Model) sourceFilterLabel() string {
+	switch m.sourceFilter {
+	case 1:
+		return "claude"
+	case 2:
+		return "codex"
+	default:
+		return "all"
+	}
+}
+
+func (m *Model) filterBySource(in []index.Session) []index.Session {
+	if m.sourceFilter == 0 {
+		return in
+	}
+	want := "claude"
+	if m.sourceFilter == 2 {
+		want = "codex"
+	}
+	out := make([]index.Session, 0, len(in))
+	for _, s := range in {
+		// For codex filter, accept both "rollout" and "history" sources.
+		if m.sourceFilter == 2 {
+			if s.Source != "claude" {
+				out = append(out, s)
+			}
+		} else if s.Source == want {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func buildPRSnippet(session index.Session, msgs []index.Message, exportPath string) string {
 	var b strings.Builder
 	heading := "Codex"
@@ -1450,6 +1502,7 @@ type keyMap struct {
 	ToggleAborted  key.Binding
 	ToggleAgents   key.Binding
 	ToggleEvents   key.Binding
+	CycleSource    key.Binding
 	Quit           key.Binding
 }
 
@@ -1535,6 +1588,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("e"),
 			key.WithHelp("e", "toggle events"),
 		),
+		CycleSource: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "cycle source filter"),
+		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
 			key.WithHelp("q", "quit"),
@@ -1550,6 +1607,6 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.ToggleSort, k.ToggleGrouping},
 		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc, k.ToggleHelp},
-		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.Quit},
+		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.CycleSource, k.Quit},
 	}
 }
