@@ -129,36 +129,44 @@ func (i *Indexer) ensureFTSTable() error {
 	return nil
 }
 
-func (i *Indexer) BuildIndex(ctx context.Context) error {
+// IndexResult contains the outcome of a BuildIndex run.
+type IndexResult struct {
+	Skipped int // number of files that failed to ingest
+}
+
+func (i *Indexer) BuildIndex(ctx context.Context) (IndexResult, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	var result IndexResult
+
 	sources, err := discoverAllSources(i.codexHome, i.claudeHome)
 	if err != nil {
-		return fmt.Errorf("discover sources: %w", err)
+		return result, fmt.Errorf("discover sources: %w", err)
 	}
 	if err := i.pruneMissingSources(ctx, sources); err != nil {
-		return err
+		return result, err
 	}
 	if len(sources) == 0 {
 		if err := i.refreshSessions(ctx); err != nil {
-			return err
+			return result, err
 		}
-		return nil
+		return result, nil
 	}
 
 	for _, src := range sources {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return result, ctx.Err()
 		default:
 		}
 		if err := i.ingestFile(ctx, src); err != nil {
-			return err
+			result.Skipped++
+			continue
 		}
 	}
 
-	return i.refreshSessions(ctx)
+	return result, i.refreshSessions(ctx)
 }
 
 type fileMeta struct {
@@ -240,7 +248,7 @@ func (i *Indexer) ingestFile(ctx context.Context, src sourceFile) error {
 	defer insertFTSStmt.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
 
 	for scanner.Scan() {
 		select {

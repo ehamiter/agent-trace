@@ -73,7 +73,10 @@ type Model struct {
 	err    error
 }
 
-type indexDoneMsg struct{ err error }
+type indexDoneMsg struct {
+	result index.IndexResult
+	err    error
+}
 type sessionsMsg struct {
 	sessions []index.Session
 	err      error
@@ -189,8 +192,8 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) indexCmd() tea.Cmd {
 	return func() tea.Msg {
-		err := m.indexer.BuildIndex(context.Background())
-		return indexDoneMsg{err: err}
+		result, err := m.indexer.BuildIndex(context.Background())
+		return indexDoneMsg{result: result, err: err}
 	}
 }
 
@@ -281,11 +284,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case indexDoneMsg:
 		m.indexing = false
-		m.err = msg.err
 		if msg.err != nil {
+			m.err = msg.err
 			m.status = "Indexing failed: " + msg.err.Error()
 		} else {
 			m.status = "Index ready"
+			if msg.result.Skipped > 0 {
+				m.status = fmt.Sprintf("Index ready (%d file(s) skipped)", msg.result.Skipped)
+			}
 			cmds = append(cmds, m.sessionsCmd(m.searchQuery))
 		}
 
@@ -1366,12 +1372,7 @@ func (m *Model) filterBySource(in []index.Session) []index.Session {
 	}
 	out := make([]index.Session, 0, len(in))
 	for _, s := range in {
-		// For codex filter, accept both "rollout" and "history" sources.
-		if m.sourceFilter == 2 {
-			if s.Source != "claude" {
-				out = append(out, s)
-			}
-		} else if s.Source == want {
+		if s.Source == want {
 			out = append(out, s)
 		}
 	}

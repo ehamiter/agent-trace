@@ -38,7 +38,7 @@ func discoverCodexSources(codexHome string) ([]sourceFile, error) {
 		}
 		name := strings.ToLower(d.Name())
 		if strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, ".jsonl") {
-			rollouts = append(rollouts, sourceFile{Path: path, Source: "rollout"})
+			rollouts = append(rollouts, sourceFile{Path: path, Source: "codex"})
 		}
 		return nil
 	})
@@ -53,7 +53,7 @@ func discoverCodexSources(codexHome string) ([]sourceFile, error) {
 
 	historyPath := filepath.Join(codexHome, "history.jsonl")
 	if stat, err := os.Stat(historyPath); err == nil && !stat.IsDir() {
-		return []sourceFile{{Path: historyPath, Source: "history"}}, nil
+		return []sourceFile{{Path: historyPath, Source: "codex"}}, nil
 	}
 	return nil, nil
 }
