@@ -1135,7 +1135,7 @@ func (m Model) View() string {
 	rightPane := panelStyle(!m.focusOnList).Width(right).Height(bodyHeight).Render(rightContent)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 	if m.helpOverlayActive() {
-		modal := m.shortcutsView(m.width-8, bodyHeight-4)
+		modal := m.shortcutsView(min(m.width-8, 72), bodyHeight-4)
 		body = backdropStyle.Render(body)
 		body = overlayModalCentered(body, modal, m.width, bodyHeight)
 	}
@@ -1258,10 +1258,7 @@ func (m Model) shortcutsView(maxWidth, maxHeight int) string {
 
 	// innerW is the content width inside the modal's border (2) + padding (2)
 	innerW := maxWidth - 4
-	numCols := 2
-	if innerW >= 120 {
-		numCols = 3
-	}
+	const numCols = 2
 	colW := innerW / numCols
 
 	const keyW = 7 // display columns reserved for right-aligned key

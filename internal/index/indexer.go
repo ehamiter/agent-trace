@@ -26,6 +26,8 @@ type Indexer struct {
 func New(codexHome, claudeHome, dbPath string, reindex bool) (*Indexer, error) {
 	if reindex {
 		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)
