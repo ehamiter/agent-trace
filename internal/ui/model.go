@@ -1222,36 +1222,89 @@ func (m Model) statusLine() string {
 }
 
 func (m Model) shortcutsView(maxWidth, maxHeight int) string {
-	if maxWidth < 44 {
-		maxWidth = 44
+	if maxWidth < 50 {
+		maxWidth = 50
 	}
 	if maxHeight < 10 {
 		maxHeight = 10
 	}
 
-	targetW := minInt(maxWidth, 84)
-	targetH := minInt(maxHeight, 22)
-	width := targetW
-	height := targetH
-	if width < 44 {
-		width = 44
-	}
-	if height < 10 {
-		height = 10
+	type entry struct{ key, desc string }
+	entries := []entry{
+		{"↑/k", "up"},
+		{"↓/j", "down"},
+		{"←", "focus list"},
+		{"→", "focus transcript"},
+		{"tab", "toggle focus"},
+		{"enter", "toggle sort"},
+		{"w", "toggle grouping"},
+		{"pgdn", "page down"},
+		{"pgup", "page up"},
+		{"n", "next match/page"},
+		{"p", "prev match/page"},
+		{"/", "search"},
+		{"esc", "clear search"},
+		{"?", "toggle shortcuts"},
+		{"r", "resume session"},
+		{"x", "export markdown"},
+		{"c", "copy PR snippet"},
+		{"t", "toggle tools"},
+		{"u", "toggle aborted"},
+		{"a", "agents expand/collapse"},
+		{"e", "toggle events"},
+		{"s", "cycle source filter"},
+		{"q", "quit"},
 	}
 
-	helpModel := m.help
-	helpModel.ShowAll = true
-	body := helpModel.View(m.keys)
+	// innerW is the content width inside the modal's border (2) + padding (2)
+	innerW := maxWidth - 4
+	numCols := 2
+	if innerW >= 120 {
+		numCols = 3
+	}
+	colW := innerW / numCols
+
+	const keyW = 7 // display columns reserved for right-aligned key
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	rowStyle := lipgloss.NewStyle().Width(colW)
+
+	renderRow := func(e entry) string {
+		lpad := keyW - ansi.StringWidth(e.key)
+		if lpad < 0 {
+			lpad = 0
+		}
+		return rowStyle.Render(
+			strings.Repeat(" ", lpad) + keyStyle.Render(e.key) + descStyle.Render("  "+e.desc),
+		)
+	}
+
+	perCol := (len(entries) + numCols - 1) / numCols
+	colStrs := make([]string, numCols)
+	for c := 0; c < numCols; c++ {
+		start := c * perCol
+		end := min(start+perCol, len(entries))
+		slice := entries[start:end]
+		lines := make([]string, 0, len(slice)*2)
+		for i, e := range slice {
+			lines = append(lines, renderRow(e))
+			if i < len(slice)-1 {
+				// blank spacer line between entries for readability
+				lines = append(lines, rowStyle.Render(""))
+			}
+		}
+		colStrs[c] = strings.Join(lines, "\n")
+	}
+
+	grid := lipgloss.JoinHorizontal(lipgloss.Top, colStrs...)
 	header := shortcutsTitleStyle.Render("Keyboard Shortcuts  (? to close)")
 	content := lipgloss.NewStyle().
-		Width(width - 4).
-		MaxHeight(height - 4).
-		Render(lipgloss.JoinVertical(lipgloss.Left, header, "", body))
+		Width(innerW).
+		Render(lipgloss.JoinVertical(lipgloss.Left, header, "", grid))
 
 	return shortcutsModalStyle().
-		Width(width).
-		Height(height).
+		Width(maxWidth).
+		Height(maxHeight).
 		Render(content)
 }
 
@@ -1316,13 +1369,6 @@ func padToWidth(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-w)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func maxInt(a, b int) int {
