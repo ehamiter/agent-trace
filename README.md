@@ -63,6 +63,7 @@ Flags:
 - `/`: enter search mode
 - `esc`: clear search mode and query
 - `?`: toggle centered keyboard-shortcuts modal
+- `r`: resume selected session (launches `claude --resume` or `codex resume` in the session's working directory)
 - `x`: export selected session
 - `c`: export + copy PR snippet to clipboard
 - `s`: toggle source: all -> Claude -> Codex

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -98,6 +99,9 @@ type renderMsg struct {
 	err       error
 }
 type copyMsg struct {
+	err error
+}
+type resumeMsg struct {
 	err error
 }
 
@@ -273,6 +277,28 @@ func (m Model) copyCmd(sessionID string) tea.Cmd {
 	}
 }
 
+func (m Model) resumeCmd(sessionID string) tea.Cmd {
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	var cmd *exec.Cmd
+	switch session.Source {
+	case "claude":
+		cmd = exec.Command("claude", "--resume", sessionID)
+	case "codex":
+		cmd = exec.Command("codex", "resume", sessionID)
+	default:
+		return nil
+	}
+	if session.Workdir != "" {
+		cmd.Dir = session.Workdir
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return resumeMsg{err: err}
+	})
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -336,6 +362,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.status = "Copied PR snippet to clipboard"
+		}
+
+	case resumeMsg:
+		if msg.err != nil {
+			m.status = "Resume error: " + msg.err.Error()
 		}
 
 	case renderMsg:
@@ -489,6 +520,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.copyCmd(m.selectedID))
 			}
 			return m, tea.Batch(cmds...)
+		case key.Matches(msg, m.keys.Resume):
+			if m.selectedID != "" {
+				return m, m.resumeCmd(m.selectedID)
+			}
+			return m, nil
 		}
 
 		if m.focusOnList {
@@ -1504,6 +1540,7 @@ type keyMap struct {
 	ToggleAgents   key.Binding
 	ToggleEvents   key.Binding
 	CycleSource    key.Binding
+	Resume         key.Binding
 	Quit           key.Binding
 }
 
@@ -1593,6 +1630,10 @@ func defaultKeys() keyMap {
 			key.WithKeys("s"),
 			key.WithHelp("s", "cycle source filter"),
 		),
+		Resume: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "resume session"),
+		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
 			key.WithHelp("q", "quit"),
@@ -1608,6 +1649,6 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.FocusLeft, k.FocusRight, k.Tab, k.ToggleSort, k.ToggleGrouping},
 		{k.PageDown, k.PageUp, k.NextPage, k.PrevPage, k.Search, k.Esc, k.ToggleHelp},
-		{k.Export, k.Copy, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.CycleSource, k.Quit},
+		{k.Export, k.Copy, k.Resume, k.ToggleTools, k.ToggleAborted, k.ToggleAgents, k.ToggleEvents, k.CycleSource, k.Quit},
 	}
 }
