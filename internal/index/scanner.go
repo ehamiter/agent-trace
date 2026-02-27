@@ -13,16 +13,20 @@ type sourceFile struct {
 	Source string
 }
 
-func discoverAllSources(codexHome, claudeHome string) ([]sourceFile, error) {
+func discoverAllSources(codexHome string, claudeHomes []string) ([]sourceFile, error) {
 	codex, err := discoverCodexSources(codexHome)
 	if err != nil {
 		return nil, err
 	}
-	claude, err := discoverClaudeSources(claudeHome)
-	if err != nil {
-		return nil, err
+	var allClaude []sourceFile
+	for _, home := range claudeHomes {
+		claude, err := discoverClaudeSources(home)
+		if err != nil {
+			return nil, err
+		}
+		allClaude = append(allClaude, claude...)
 	}
-	return append(codex, claude...), nil
+	return append(codex, allClaude...), nil
 }
 
 func discoverCodexSources(codexHome string) ([]sourceFile, error) {

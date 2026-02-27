@@ -15,15 +15,15 @@ import (
 )
 
 type Indexer struct {
-	codexHome  string
-	claudeHome string
-	dbPath     string
-	db         *sql.DB
-	ftsEnabled bool
-	mu         sync.Mutex
+	codexHome   string
+	claudeHomes []string
+	dbPath      string
+	db          *sql.DB
+	ftsEnabled  bool
+	mu          sync.Mutex
 }
 
-func New(codexHome, claudeHome, dbPath string, reindex bool) (*Indexer, error) {
+func New(codexHome string, claudeHomes []string, dbPath string, reindex bool) (*Indexer, error) {
 	if reindex {
 		_ = os.Remove(dbPath)
 		_ = os.Remove(dbPath + "-wal")
@@ -35,7 +35,7 @@ func New(codexHome, claudeHome, dbPath string, reindex bool) (*Indexer, error) {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
-	i := &Indexer{codexHome: codexHome, claudeHome: claudeHome, dbPath: dbPath, db: db}
+	i := &Indexer{codexHome: codexHome, claudeHomes: claudeHomes, dbPath: dbPath, db: db}
 	if err := i.initSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -142,7 +142,7 @@ func (i *Indexer) BuildIndex(ctx context.Context) (IndexResult, error) {
 
 	var result IndexResult
 
-	sources, err := discoverAllSources(i.codexHome, i.claudeHome)
+	sources, err := discoverAllSources(i.codexHome, i.claudeHomes)
 	if err != nil {
 		return result, fmt.Errorf("discover sources: %w", err)
 	}

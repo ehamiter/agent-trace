@@ -46,7 +46,8 @@ make rebuild   # install + reindex in one command
 Flags:
 
 - `--codex-home` override `CODEX_HOME` (default: env `CODEX_HOME` or `$HOME/.codex`)
-- `--db-path` SQLite DB path (default: `$CODEX_HOME/codex-history-index.sqlite`)
+- `--claude-home` comma-separated path(s) to Claude home director(ies); can be repeated (default: all `~/.claude*` dirs that contain a `projects/` subdirectory, e.g. `~/.claude` and `~/.claude-container` are both picked up automatically)
+- `--db-path` SQLite DB path (default: `$HOME/.local/share/agent-trace/index.sqlite`)
 - `--reindex` force DB rebuild
 - `--export-dir` override export output directory
 
