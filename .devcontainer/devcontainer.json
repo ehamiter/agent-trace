@@ -1,0 +1,16 @@
+{
+  "name": "Claude Code Sandbox",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude-container,target=/home/vscode/.claude,type=bind"
+  ],
+  "remoteEnv": {
+      "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
+    },
+  "remoteUser": "vscode"
+}
